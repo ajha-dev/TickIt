@@ -126,7 +126,18 @@ All responses are JSON. Errors: `{ error: string }` with 400 / 404 / 409.
   Sorted `startAt DESC`. `limit` defaults to 200, max 1000.
 - `GET /api/events/running?profileId=…` → `Event[]`
   `type = 'INTERVAL' AND endAt IS NULL`, sorted `startAt ASC`.
-- `POST /api/events` `{ trackerId, startAt?, values?, note? }` → `Event` `201`
+- `POST /api/events` `{ id?, trackerId, startAt?, values?, note? }` → `Event` `201`
+  **`id` is an optional client-supplied UUID**, so an offline queue can retry
+  safely. A dropped response is indistinguishable from a dropped request, so a
+  retry carrying an id the server already has means "did you get this?", not
+  "log another one": the existing row is returned with **200** instead of a
+  second event being created. Verified — three sends of one id leave exactly one
+  event, with the original `startAt` intact.
+
+  The id is checked before the running-span check, so replaying a queued start
+  whose span has since been stopped is recognised rather than answered with 409.
+  It does not survive the tracker being deleted — that cascades the event away,
+  and the replay 404s, which clients must treat as permanent.
   `startAt` defaults to now. Server reads the tracker to set `type` and
   `profileId`. For `INSTANT`, `endAt` stays null forever. For `INTERVAL`, this
   starts a run.

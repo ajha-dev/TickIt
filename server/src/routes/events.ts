@@ -60,16 +60,35 @@ eventRoutes.post('/events', async (c) => {
   const parsed = createEventSchema.safeParse(await readJson(c))
   if (!parsed.success) return c.json({ error: zodMessage(parsed.error) }, 400)
 
-  const { trackerId, startAt, values, note } = parsed.data
+  const { id, trackerId, startAt, values, note } = parsed.data
 
   type Outcome =
     | { kind: 'created'; row: EventRow }
+    | { kind: 'replayed'; row: EventRow }
     | { kind: 'no-tracker' }
     | { kind: 'already-running'; eventId: string }
     | { kind: 'bad-values'; error: string }
 
   // The running check and the insert must not straddle a write from elsewhere.
   const create = sqlite.transaction((): Outcome => {
+    // A replay of a write we already committed. The offline outbox retries when
+    // it cannot tell whether a request landed — a dropped response looks exactly
+    // like a dropped request — so the same id arriving twice means "did you get
+    // this?", not "log another one". Answer with the row we already have.
+    //
+    // Checked before the running-span check deliberately: replaying a queued
+    // start whose span has since been stopped, or which is now the running one,
+    // must be recognised rather than answered with 409 ALREADY_RUNNING.
+    //
+    // It does NOT survive the tracker being deleted — that cascades the event
+    // away, so there is nothing left to recognise and the replay 404s. That is
+    // correct: the log has nowhere to live. The outbox must treat 404 as
+    // permanent and drop the queued write rather than retrying it forever.
+    if (id !== undefined) {
+      const existing = db.select().from(events).where(eq(events.id, id)).get()
+      if (existing) return { kind: 'replayed', row: existing }
+    }
+
     const tracker = db.select().from(trackers).where(eq(trackers.id, trackerId)).get()
     if (!tracker) return { kind: 'no-tracker' }
 
@@ -89,7 +108,7 @@ eventRoutes.post('/events', async (c) => {
 
     const now = Date.now()
     const row: EventRow = {
-      id: newId(),
+      id: id ?? newId(),
       trackerId: tracker.id,
       profileId: tracker.profileId,
       type: tracker.type,
@@ -110,7 +129,9 @@ eventRoutes.post('/events', async (c) => {
   if (result.kind === 'already-running') {
     return c.json({ error: 'ALREADY_RUNNING', eventId: result.eventId }, 409)
   }
-  return c.json(result.row, 201)
+  // 200 rather than 201 on a replay: nothing was created this time. The body is
+  // the same either way, so a client that ignores the status still works.
+  return c.json(result.row, result.kind === 'replayed' ? 200 : 201)
 })
 
 eventRoutes.post('/events/:id/stop', async (c) => {

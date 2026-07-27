@@ -173,6 +173,11 @@ export const runningEventsQuerySchema = z.object({
 })
 
 export const createEventSchema = z.object({
+  // Optional client-supplied id, so an offline queue can retry safely: if the
+  // response is lost after the server committed, the replay carries the same id
+  // and is recognised rather than inserted twice. UUIDv7 keeps ids
+  // time-sortable however they were minted.
+  id: z.string().uuid().optional(),
   trackerId: z.string().min(1),
   startAt: epochMs.optional(),
   values: valuesSchema.optional(),
