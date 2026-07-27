@@ -148,9 +148,46 @@ rasphome is busy. Measured, not assumed:
 | **9091** | **TickIt Litestream metrics** |
 | 11434 | ollama |
 
-**Reach:** run Tailscale on the Pi host, not in the container. The tailnet is
+**Reach:** Tailscale runs on the Pi host, not in the container. The tailnet is
 the security boundary — there is deliberately no login (see `PLAN.md`). Every
 device that uses the app must be on the tailnet.
+
+### The URL
+
+```
+https://rasphome.himalayan-goldeye.ts.net:8443
+```
+
+Served by `tailscale serve`, which terminates TLS with a real Let's Encrypt
+certificate for the MagicDNS name and proxies to the container on `:3002`:
+
+```sh
+sudo tailscale serve --bg --https=8443 http://127.0.0.1:3002
+tailscale serve status
+```
+
+**Why port 8443 rather than the root of the hostname.** `https://rasphome…/`
+was already claimed by an existing serve mapping to `127.0.0.1:18789`. Nothing
+listens there any more — the mapping is stale — but it belongs to another app on
+a shared box and was not ours to silently replace. A distinct HTTPS port keeps
+TickIt at the root of its own origin, which matters more than it looks: the
+service worker's scope, the manifest's `start_url` and every asset path assume
+`/`. Mounting under a sub-path would have meant rebuilding the client with a
+`base`. To move it to the root once that stale mapping is confirmed dead:
+
+```sh
+sudo tailscale serve --bg --https=443 http://127.0.0.1:3002
+sudo tailscale serve --https=8443 off
+```
+
+Both halves survive a reboot: `tailscaled` is enabled at boot and stores the
+serve config in `/var/lib/tailscale`, and the container is `restart:
+unless-stopped`.
+
+The certificate is what makes reminders possible at all — Web Push refuses to
+work without real HTTPS, and on iOS only for a PWA added to the Home Screen. The
+first request after configuring serve takes ~15s while Tailscale provisions the
+certificate, and will look like a timeout. It is not; retry.
 
 ## Reminders and Web Push
 
