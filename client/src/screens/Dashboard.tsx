@@ -11,11 +11,12 @@
  * comparison it appears to offer is not one anybody asked for.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useLocation } from 'wouter'
 
 import { Actogram, ActogramLegend } from '../components/Actogram.tsx'
 import { Sheet } from '../components/Sheet.tsx'
+import { useChartTracker } from '../lib/chartTracker.ts'
 import { safeColour } from '../lib/colours.ts'
 import { addDays, endOfDay, startOfDay } from '../lib/days.ts'
 import { useEventRange, EVENT_LIMIT } from '../lib/eventWindow.ts'
@@ -23,7 +24,7 @@ import { useTrackers } from '../lib/queries.ts'
 import { seriesScheme } from '../lib/series.ts'
 import { columnsFor, dayRange, SPAN_LOOKBACK_MS } from '../lib/stats.ts'
 import { useNow } from '../lib/time.ts'
-import type { Event, Profile, Tracker } from '../types.ts'
+import type { Event, Profile } from '../types.ts'
 
 /** A fortnight is what a pattern needs to be visible without being a wall. */
 const RANGES = [14, 30, 60] as const
@@ -36,28 +37,15 @@ export function DashboardScreen({ profile }: { profile: Profile }) {
   const now = useNow(60_000)
 
   const [range, setRange] = useState<Range>(14)
-  const [trackerId, setTrackerId] = useState<string | null>(null)
   const [picking, setPicking] = useState(false)
 
   const trackersQuery = useTrackers(profileId)
   const trackers = useMemo(() => trackersQuery.data ?? [], [trackersQuery.data])
 
-  // Chartable trackers are the active ones, plus whichever is being shown —
-  // archiving hides a tracker from the home grid, it does not erase its
-  // history, so a chart already open on one stays open.
-  const selectable = useMemo(
-    () => trackers.filter((t) => t.archivedAt === null || t.id === trackerId),
-    [trackers, trackerId],
-  )
-
-  const tracker: Tracker | null =
-    selectable.find((t) => t.id === trackerId) ?? selectable[0] ?? null
-
-  // The remembered choice is per profile: switching context should not leave a
-  // dangling id from the last one.
-  useEffect(() => {
-    setTrackerId(null)
-  }, [profileId])
+  // The choice is remembered per profile and survives a reload — see
+  // lib/chartTracker.ts. Switching profile picks up that profile's own
+  // remembered tracker rather than carrying a dangling id across.
+  const { tracker, selectable, select: selectTracker } = useChartTracker(profileId, trackers)
 
   const days = useMemo(() => {
     const last = startOfDay(now)
@@ -192,7 +180,7 @@ export function DashboardScreen({ profile }: { profile: Profile }) {
             key={candidate.id}
             type="button"
             onClick={() => {
-              setTrackerId(candidate.id)
+              selectTracker(candidate.id)
               setPicking(false)
             }}
             aria-current={candidate.id === tracker?.id ? 'true' : undefined}
