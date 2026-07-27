@@ -4,45 +4,62 @@ import { Link } from 'wouter'
 import { ApiError } from '../api.ts'
 import { EventRow } from '../components/EventRow.tsx'
 import { EventSheet, type EventPatch } from '../components/EventSheet.tsx'
-import { addDays, formatDayHeading, startOfDay } from '../lib/days.ts'
+import { addDays, endOfDay, formatDayHeading, startOfDay } from '../lib/days.ts'
 import { hapticUndo } from '../lib/haptics.ts'
-import { useDeleteEvent, useEventWindow, useTrackers, useUpdateEvent } from '../lib/queries.ts'
+import { useDeleteEvent, useEventRange, useRunning, useTrackers, useUpdateEvent } from '../lib/queries.ts'
+import { formatDay } from '../lib/time.ts'
 import type { Event, Profile, Tracker } from '../types.ts'
 
-/** A fortnight is what "recently" means for a log you check daily. */
-const INITIAL_DAYS = 14
-/** Each "load older" reaches back a month further. */
-const STEP_DAYS = 30
-/** The contract's ceiling. Hitting it is reported, never hidden. */
-const LIMIT = 1000
+/**
+ * How far before a day the query has to reach to catch a span that began
+ * earlier and is still going when the day starts. Two days covers an overnight
+ * plus a long nap either side of it; anything still open beyond that is a
+ * *running* span, and those arrive separately from `/events/running` where no
+ * lookback can miss them.
+ *
+ * Deliberately defined here rather than imported: this is the Timeline's own
+ * assumption about its own query.
+ */
+const SPAN_LOOKBACK_MS = 2 * 24 * 60 * 60 * 1000
 
-interface DayGroup {
-  day: number
-  events: Event[]
-}
+/**
+ * The contract's ceiling. A single day plus a 48h lookback is never going to
+ * reach it in a personal log — but "never going to" is not "cannot", and a
+ * silently truncated day would be a day you could not correct. The guard stays.
+ */
+const LIMIT = 1000
 
 export function TimelineScreen({ profile }: { profile: Profile }) {
   const profileId = profile.id
 
-  const [windowDays, setWindowDays] = useState(INITIAL_DAYS)
-  // Reaching further back is per-profile: switching context should not inherit
-  // the last one's depth.
-  useEffect(() => setWindowDays(INITIAL_DAYS), [profileId])
+  // Which local day is on screen, held as its own midnight so every comparison
+  // below is an equality rather than a range check.
+  const [day, setDay] = useState(() => startOfDay(Date.now()))
+  // Switching profile is switching context entirely — it should land on today,
+  // not on whatever date the last profile was being read at.
+  useEffect(() => setDay(startOfDay(Date.now())), [profileId])
 
-  const from = useMemo(
-    () => startOfDay(addDays(Date.now(), -(windowDays - 1))),
-    [windowDays],
+  const dayStart = day
+  const dayEnd = endOfDay(day)
+  const today = startOfDay(Date.now())
+  const isFuture = day > today
+
+  const eventsQuery = useEventRange(
+    profileId,
+    dayStart - SPAN_LOOKBACK_MS,
+    // The server's `to` is inclusive and filters on `startAt`, while `endOfDay`
+    // is the *next* midnight. Without the -1 an event logged at exactly 00:00
+    // would be claimed by both days.
+    dayEnd - 1,
+    LIMIT,
   )
-
-  const eventsQuery = useEventWindow(profileId, from, LIMIT)
+  const runningQuery = useRunning(profileId)
   const trackersQuery = useTrackers(profileId)
   const updateEvent = useUpdateEvent(profileId)
   const deleteEvent = useDeleteEvent(profileId)
 
   const [editing, setEditing] = useState<Event | null>(null)
   const [error, setError] = useState<string | null>(null)
-
-  const events = useMemo(() => eventsQuery.data ?? [], [eventsQuery.data])
 
   const trackerById = useMemo(() => {
     const map = new Map<string, Tracker>()
@@ -51,23 +68,41 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
   }, [trackersQuery.data])
 
   /**
-   * The server already sorts `startAt DESC`, so grouping is a single pass with
-   * no re-sorting. The boundary comes from `lib/days.ts` and therefore from the
-   * device's zone: an event at 00:20 belongs to the day it felt like, not to
-   * whichever UTC date it happens to carry.
+   * Everything that happened *during* this local day, earliest first.
+   *
+   * Two things make this more than a filter on `startAt`. A span belongs to
+   * every day it touches, not only the one it began on — an overnight feed is
+   * part of both nights. And a long-running span may have started before the
+   * query's lookback, so the running list is merged in and de-duplicated by id.
+   *
+   * Ascending, deliberately: a day is read forwards. The first feed of the
+   * morning is where the story starts, and the gaps between rows only mean
+   * anything when time runs down the page.
    */
-  const groups = useMemo(() => {
-    const out: DayGroup[] = []
-    for (const event of events) {
-      const day = startOfDay(event.startAt)
-      const last = out[out.length - 1]
-      if (last && last.day === day) last.events.push(event)
-      else out.push({ day, events: [event] })
-    }
-    return out
-  }, [events])
+  const events = useMemo(() => {
+    const byId = new Map<string, Event>()
+    for (const e of eventsQuery.data ?? []) byId.set(e.id, e)
+    for (const e of runningQuery.data ?? []) byId.set(e.id, e)
 
-  const truncated = events.length >= LIMIT
+    const now = Date.now()
+    const out: Event[] = []
+    for (const e of byId.values()) {
+      if (e.startAt >= dayEnd) continue
+      if (e.startAt >= dayStart) {
+        out.push(e)
+        continue
+      }
+      // Started before this day: it only belongs here if it was still open when
+      // the day began. A running span is open until now, so it reaches every
+      // day up to today and no further.
+      if (e.type !== 'INTERVAL') continue
+      const finishedAt = e.endAt ?? now
+      if (finishedAt > dayStart) out.push(e)
+    }
+    return out.sort((a, b) => a.startAt - b.startAt)
+  }, [eventsQuery.data, runningQuery.data, dayStart, dayEnd])
+
+  const truncated = (eventsQuery.data?.length ?? 0) >= LIMIT
 
   const openEvent = useCallback((event: Event) => {
     setError(null)
@@ -103,19 +138,27 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
 
   return (
     <div className="relative z-10 flex min-h-dvh flex-col">
-      <header className="pad-safe-top pad-safe-x pb-3">
+      <header className="pad-safe-top pad-safe-x pb-2">
         <h1 className="lockup text-[15px] font-semibold tracking-[-0.02em]">Timeline</h1>
-        <p className="stencil mt-1.5">
-          {profile.name}
-          {events.length > 0 ? ` · ${events.length} logged` : ''}
-        </p>
+        <p className="stencil mt-1.5">{profile.name}</p>
       </header>
 
-      <main className="pad-safe-x pad-tabs flex-1">
+      <DayPicker
+        day={day}
+        onChange={setDay}
+        // There is nothing to page forward into: today is the last day that can
+        // have happened. A future date is still reachable through the picker,
+        // because an event can be logged ahead of itself.
+        canGoForward={day < today}
+        count={events.length}
+        loading={eventsQuery.isFetching}
+      />
+
+      <main className="pad-safe-x pad-tabs flex-1 pt-3">
         {eventsQuery.isPending ? (
-          <p className="stencil mt-4">loading</p>
+          <p className="stencil">loading</p>
         ) : eventsQuery.isError ? (
-          <div className="rounded-tile hairline mt-2 bg-ink-850 p-5">
+          <div className="rounded-tile hairline bg-ink-850 p-5">
             <p className="stencil">offline</p>
             <p className="mt-2 text-[17px] leading-snug">
               Can’t reach the server, so nothing can be shown or corrected yet.
@@ -128,52 +171,40 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
               Try again
             </button>
           </div>
-        ) : groups.length === 0 ? (
-          <EmptyWindow profileName={profile.name} windowDays={windowDays} />
+        ) : events.length === 0 ? (
+          <EmptyDay day={day} isFuture={isFuture} profileName={profile.name} />
         ) : (
           <>
             {truncated ? (
               <p className="mb-3 rounded-xl border border-ink-700 bg-ink-850 px-3.5 py-2.5 text-[13px] leading-snug text-text-dim">
-                Only the {LIMIT} most recent entries in this range are shown — the
-                oldest of them are not on this list.
+                This day hit the {LIMIT}-entry ceiling. Some of it is not on this list.
               </p>
             ) : null}
 
-            {groups.map((group) => (
-              <section key={group.day} aria-label={formatDayHeading(group.day)}>
-                {/* Sticky so the day you are reading names itself the whole way
-                    down its own group, instead of scrolling off at the first row. */}
-                <h2 className="sticky top-0 z-20 -mx-4 flex items-baseline justify-between gap-3 bg-ink-900/92 px-4 pt-3 pb-2 backdrop-blur-md">
-                  <span className="text-[15px] leading-none font-semibold tracking-[-0.02em]">
-                    {formatDayHeading(group.day)}
-                  </span>
-                  <span className="stencil">
-                    {group.events.length} {group.events.length === 1 ? 'entry' : 'entries'}
-                  </span>
-                </h2>
-
-                <div className="pb-1">
-                  {group.events.map((event) => (
-                    <EventRow
-                      key={event.id}
-                      event={event}
-                      tracker={trackerById.get(event.trackerId)}
-                      onOpen={() => openEvent(event)}
-                    />
-                  ))}
-                </div>
-              </section>
-            ))}
+            <div>
+              {events.map((event) => (
+                <EventRow
+                  key={event.id}
+                  event={event}
+                  tracker={trackerById.get(event.trackerId)}
+                  onOpen={() => openEvent(event)}
+                  above={
+                    event.startAt < dayStart
+                      ? `started ${formatDayHeading(event.startAt).toLowerCase()}`
+                      : undefined
+                  }
+                  below={
+                    event.type === 'INTERVAL' && event.endAt === null
+                      ? 'still running'
+                      : event.endAt !== null && event.endAt >= dayEnd
+                        ? `continues into ${dayWord(dayEnd)}`
+                        : undefined
+                  }
+                />
+              ))}
+            </div>
           </>
         )}
-
-        {!eventsQuery.isPending && !eventsQuery.isError ? (
-          <Older
-            from={from}
-            loading={eventsQuery.isFetching}
-            onLoad={() => setWindowDays((d) => d + STEP_DAYS)}
-          />
-        ) : null}
       </main>
 
       {editing ? (
@@ -192,20 +223,150 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
 }
 
 /**
- * The window is empty. That is two different situations — nothing has ever been
- * logged, or nothing was logged lately — and the useful thing to say differs,
- * so both the way to log and the way to look further back are offered.
+ * The day this screen is showing, and the only way to change it.
+ *
+ * Arrows step a day at a time — the common move, one thumb, no aiming. The
+ * label between them is itself the target for a native date picker, so a day
+ * three months back is one tap away instead of ninety. The whole bar sticks to
+ * the top: knowing *which* day you are reading matters as much on row forty as
+ * on row one.
  */
-function EmptyWindow({ profileName, windowDays }: { profileName: string; windowDays: number }) {
+function DayPicker({
+  day,
+  onChange,
+  canGoForward,
+  count,
+  loading,
+}: {
+  day: number
+  onChange: (next: number) => void
+  canGoForward: boolean
+  count: number
+  loading: boolean
+}) {
+  const heading = formatDayHeading(day)
+  const today = startOfDay(Date.now())
+  // "Today" and "Yesterday" name a day without dating it, so those two get the
+  // calendar date spelled out underneath. Every other heading already is one.
+  const relative = day === today || day === addDays(today, -1)
+
   return (
-    <div className="rounded-tile hairline mt-2 bg-ink-850 p-5">
-      <p className="stencil">nothing in the last {windowDays} days</p>
+    <div className="pad-safe-x sticky top-0 z-30 border-b border-ink-700 bg-ink-900/92 pb-2.5 backdrop-blur-md">
+      <div className="flex items-center gap-2">
+        <Arrow direction="back" onClick={() => onChange(addDays(day, -1))} />
+
+        <div className="relative min-w-0 flex-1">
+          <label className="tap flex h-12 w-full cursor-pointer flex-col items-center justify-center rounded-xl active:bg-ink-850">
+            <span className="flex max-w-full items-center gap-1.5">
+              <span className="truncate text-[17px] leading-tight font-semibold tracking-[-0.02em]">
+                {heading}
+              </span>
+              {/* The only hint that the label is a target rather than a caption. */}
+              <svg viewBox="0 0 24 24" className="size-3.5 shrink-0 text-text-dim" fill="none" aria-hidden>
+                <rect x="3.5" y="5" width="17" height="15.5" rx="3" stroke="currentColor" strokeWidth="1.7" />
+                <path d="M3.5 10h17M8 3.5v3M16 3.5v3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+              </svg>
+            </span>
+            {relative ? (
+              <span className="stencil mt-1">{formatDay(day)}</span>
+            ) : null}
+
+            {/* The native picker, laid invisibly over its own label: the phone's
+                own calendar, opened by tapping the date it is showing. */}
+            <input
+              type="date"
+              aria-label="Show another day"
+              value={toDateInput(day)}
+              onChange={(e) => {
+                const next = fromDateInput(e.target.value)
+                if (next !== null) onChange(next)
+              }}
+              className="absolute inset-0 cursor-pointer opacity-0"
+            />
+          </label>
+        </div>
+
+        <Arrow direction="forward" onClick={() => onChange(addDays(day, 1))} disabled={!canGoForward} />
+      </div>
+
+      <p className="stencil mt-0.5 text-center">
+        {loading ? 'loading' : count === 0 ? 'nothing logged' : `${count} ${count === 1 ? 'entry' : 'entries'}`}
+      </p>
+    </div>
+  )
+}
+
+function Arrow({
+  direction,
+  onClick,
+  disabled,
+}: {
+  direction: 'back' | 'forward'
+  onClick: () => void
+  disabled?: boolean
+}) {
+  const back = direction === 'back'
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={back ? 'Previous day' : 'Next day'}
+      // Disabled keeps its box: the bar should not go lopsided the moment it
+      // lands on today, and a greyed control still reads as "not now" rather
+      // than "gone".
+      className="tap flex size-12 shrink-0 items-center justify-center rounded-xl border border-ink-700 bg-ink-850 text-text-dim active:bg-ink-800 disabled:opacity-30"
+    >
+      <svg viewBox="0 0 24 24" className="size-5" fill="none" aria-hidden>
+        <path
+          d={back ? 'M14.5 5.5L8 12l6.5 6.5' : 'M9.5 5.5L16 12l-6.5 6.5'}
+          stroke="currentColor"
+          strokeWidth="1.9"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  )
+}
+
+/**
+ * An empty day is two different things. A past one is a day nothing happened
+ * on — normal, and worth being able to leave quickly. A future one has not
+ * happened yet, and saying "nothing logged" about it would read as data loss.
+ */
+function EmptyDay({
+  day,
+  isFuture,
+  profileName,
+}: {
+  day: number
+  isFuture: boolean
+  profileName: string
+}) {
+  if (isFuture) {
+    return (
+      <div className="rounded-tile hairline bg-ink-850 p-5">
+        <p className="stencil">not yet</p>
+        <p className="mt-2.5 text-[19px] leading-snug tracking-[-0.02em] text-balance">
+          {formatDay(day)} hasn’t happened yet.
+        </p>
+        <p className="mt-2.5 text-[15px] leading-snug text-text-dim">
+          Nothing is missing — this day is simply ahead of the clock. Anything logged for it will
+          appear here.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-tile hairline bg-ink-850 p-5">
+      <p className="stencil">nothing on this day</p>
       <p className="mt-2.5 text-[19px] leading-snug tracking-[-0.02em] text-balance">
-        Every tap on Home lands here. This is where “the feed actually started at 3:40” gets
-        fixed.
+        {profileName} has no entries for {formatDay(day)}.
       </p>
       <p className="mt-2.5 text-[15px] leading-snug text-text-dim">
-        {profileName} has nothing logged in this window. Log something, or reach further back.
+        Step back a day with the arrow, or pick a date from the calendar above.
       </p>
       <Link
         href="/"
@@ -218,27 +379,40 @@ function EmptyWindow({ profileName, windowDays }: { profileName: string; windowD
 }
 
 /**
- * History is never silently truncated: the list always ends by naming the exact
- * day it currently reaches back to, and always offers to go further.
- *
- * There is deliberately no "that's everything" state. A widened window that
- * returns nothing new only proves that *that* window is empty — an event can be
- * backdated to any instant, so "nothing exists before this" is not something
- * the contract can be asked. Stating the reach is true; guessing at the end of
- * history would not be.
+ * A day named the way a sentence would name it. `formatDayHeading` covers
+ * "Today" and "Yesterday" because those are the only two a *log* looks back
+ * at; a span running off the bottom of a day points forwards instead, so
+ * "tomorrow" is added here rather than in `lib/days.ts`, which nothing else
+ * needs it in.
  */
-function Older({ from, loading, onLoad }: { from: number; loading: boolean; onLoad: () => void }) {
-  return (
-    <div className="mt-6 flex flex-col items-center gap-2.5 pb-2">
-      <p className="stencil text-center">back to {formatDayHeading(from).toLowerCase()}</p>
-      <button
-        type="button"
-        onClick={onLoad}
-        disabled={loading}
-        className="tap h-12 w-full max-w-[240px] rounded-xl border border-ink-700 bg-ink-850 text-[15px] text-text-dim active:bg-ink-800 disabled:opacity-50"
-      >
-        {loading ? 'Loading…' : `Load ${STEP_DAYS} days older`}
-      </button>
-    </div>
-  )
+function dayWord(ms: number): string {
+  const today = startOfDay(Date.now())
+  if (startOfDay(ms) === addDays(today, 1)) return 'tomorrow'
+  return formatDayHeading(ms).toLowerCase()
+}
+
+/* ------------------------------------------------- local date ⇄ midnight -- */
+
+/**
+ * `<input type="date">` speaks `YYYY-MM-DD` and nothing else. Both directions
+ * go through the `Date` constructor's local-time semantics — the same bridge
+ * the edit sheet uses — so the value the picker shows is the day the rest of
+ * the screen is resolving, in the device's zone, with no offset arithmetic.
+ */
+function toDateInput(ms: number): string {
+  const d = new Date(ms)
+  const pad = (n: number, width = 2) => String(n).padStart(width, '0')
+  return `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+function fromDateInput(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return null
+  const [year, month, dayOfMonth] = match.slice(1).map(Number) as [number, number, number]
+  const d = new Date(year, month - 1, dayOfMonth, 0, 0, 0, 0)
+  // The constructor rolls 31 February into March rather than refusing it.
+  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== dayOfMonth) {
+    return null
+  }
+  return d.getTime()
 }

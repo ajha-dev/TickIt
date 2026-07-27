@@ -20,10 +20,16 @@ export function EventRow({
   event,
   tracker,
   onOpen,
+  above,
+  below,
 }: {
   event: Event
   tracker: Tracker | undefined
   onOpen: () => void
+  /** "started yesterday" — a span whose beginning is off the top of this day. */
+  above?: string
+  /** "continues into tomorrow" / "still running" — its end is off the bottom. */
+  below?: string
 }) {
   const colour = safeColour(tracker?.colour)
   // A tracker deleted out from under its events is a real state, not a crash:
@@ -69,6 +75,11 @@ export function EventRow({
       </span>
 
       <span className="min-w-0 flex-1 pb-0.5">
+        {/* A span can begin before this day starts or end after it finishes. The
+            row shows its real start time either way; these two lines are what
+            stop that time reading as a time on *this* day. */}
+        {above ? <span className="stencil mb-1.5 block text-mauve/75">{above}</span> : null}
+
         <span className="flex items-baseline gap-2.5">
           <span
             className={`min-w-0 flex-1 truncate text-[17px] leading-tight font-medium tracking-[-0.02em] ${
@@ -96,6 +107,8 @@ export function EventRow({
         {/* The whole audit story, and deliberately the quietest thing on the
             row: enough to tell a reconstructed time from a recorded one, never
             enough to distract from the log itself. */}
+        {below ? <span className="stencil mt-1.5 block text-mauve/75">{below}</span> : null}
+
         {wasEdited ? <span className="stencil mt-1.5 block opacity-70">edited</span> : null}
       </span>
     </button>

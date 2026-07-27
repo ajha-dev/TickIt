@@ -64,29 +64,38 @@ const TABS: Tab[] = [
     ),
   },
   {
-    href: '/calendar',
-    label: 'Calendar',
+    href: '/dashboard',
+    label: 'Dashboard',
+    // Bars rising from a baseline — the actogram the screen actually draws,
+    // not a generic chart glyph.
     icon: (active) => (
       <>
-        <rect
-          x="3.6"
-          y="5.5"
-          width="16.8"
-          height="14"
-          rx="3"
-          stroke="currentColor"
-          strokeWidth="1.55"
-          fill="none"
-        />
         <path
-          d="M3.6 10h16.8"
+          d="M4 19.2h16"
           stroke="currentColor"
-          strokeWidth="1.55"
-          opacity={active ? 0.9 : 0.55}
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          opacity={active ? 0.9 : 0.5}
         />
-        <circle cx="8.4" cy="13.8" r="1.25" fill="currentColor" />
-        <circle cx="12" cy="13.8" r="1.25" fill="currentColor" opacity={active ? 1 : 0.6} />
-        <circle cx="15.6" cy="16.6" r="1.25" fill="currentColor" opacity={active ? 1 : 0.6} />
+        <rect x="5.4" y="11" width="3.1" height="5.6" rx="1.55" fill="currentColor" />
+        <rect
+          x="10.45"
+          y="6.2"
+          width="3.1"
+          height="10.4"
+          rx="1.55"
+          fill="currentColor"
+          opacity={active ? 1 : 0.72}
+        />
+        <rect
+          x="15.5"
+          y="9"
+          width="3.1"
+          height="7.6"
+          rx="1.55"
+          fill="currentColor"
+          opacity={active ? 1 : 0.72}
+        />
       </>
     ),
   },

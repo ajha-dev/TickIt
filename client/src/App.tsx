@@ -4,7 +4,7 @@ import { Link, Route, Switch } from 'wouter'
 import { TabBar } from './components/TabBar.tsx'
 import { useProfileSelection } from './lib/profile.ts'
 import { useProfiles } from './lib/queries.ts'
-import { CalendarScreen } from './screens/Calendar.tsx'
+import { DashboardScreen } from './screens/Dashboard.tsx'
 import { Home } from './screens/Home.tsx'
 import { ProfilesScreen } from './screens/Profiles.tsx'
 import { TimelineScreen } from './screens/Timeline.tsx'
@@ -47,8 +47,8 @@ export function App() {
           {profile ? <TimelineScreen profile={profile} /> : <NoProfile />}
         </Route>
 
-        <Route path="/calendar">
-          {profile ? <CalendarScreen profile={profile} /> : <NoProfile />}
+        <Route path="/dashboard">
+          {profile ? <DashboardScreen profile={profile} /> : <NoProfile />}
         </Route>
 
         <Route path="/trackers">

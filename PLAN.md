@@ -139,29 +139,47 @@ by drag; that order is the home grid order.
 
 **Profiles** — create, rename, recolour, archive.
 
-**Dashboard** — per profile, the read side of the app. Two levels:
+**Dashboard** — per profile, the read side of the app. **One tracker, charted
+over time.**
 
-*Month* — a calendar grid. Each day cell carries a compact density indicator
-(a small stacked bar or dot row, coloured by tracker) so a month of feeding or
-training reads at a glance. Tap a day to open it.
+Pick a tracker; the screen draws an **actogram** of it. Days run across the
+x-axis, one column each; time of day runs down the y-axis, a full 24 hours.
+Every event is a mark in its day's column, placed by *when in the day* it
+happened — a Span as a vertical rectangle from its start to its end, a Moment as
+a tick. A month of feeding is then a raster, and "feeds cluster at 02:00" is a
+horizontal band you can see rather than something you reconstruct from a list.
 
-*Day* — the point of the whole section. A 24-hour ribbon with one lane per
-tracker: Spans draw as bars, Moments as ticks. Overnight feeds, nap lengths, and
-the gaps between them become visible in a way a list never shows. Swipe
-left/right to move between days. Below the ribbon, a summary per tracker:
+Range is 14 / 30 / 60 days, defaulting to a fortnight. Colour normally comes
+from the tracker, so a single-tracker chart needs no legend at all; when the
+tracker has a `CHOICE` or `BOOL` field, *that field* becomes the series — Feed
+side Left/Right/Both in three colours, plus a deliberately neutral grey for
+"not recorded", which is the normal outcome of a one-tap log and must never look
+like a category. `NUMBER` and `TEXT` do not colour anything: a magnitude is not
+a category, and pretending otherwise invents structure that is not in the data.
 
-- count
-- total duration and average duration (Spans only)
-- longest gap between events — the genuinely useful number for feeding
-- time since the last event
+Rules, all of them load-bearing:
 
-Rules: the ribbon always shows the full 24 hours, never auto-crops to
-"interesting" hours, or nights stop being comparable across days. Colour comes
-from the tracker, so the legend is the tracker list itself. Tap any bar or tick
-to jump to that event in the Timeline.
+- **The y-axis is always the full 24 hours** and never crops to the hours that
+  happen to have data, or two nights stop being comparable.
+- **Every day in the range gets a column, including the empty ones**, or the
+  x-axis lies about how much time passed between two clusters.
+- **A Span crossing midnight is split at the boundary and drawn in both
+  columns**, clipped, with the cut edge squared off so a flat end always reads
+  as "continues". A running Span is clipped to now.
+- One tracker at a time. Two on one 24-hour field is confetti.
+- Tap any mark to jump to that event in the Timeline.
 
-No trend lines, no week-over-week comparisons, no charts beyond the ribbon until
-real data proves which one is wanted.
+*A month calendar was built here first and replaced.* It had a grid of day
+cells carrying density indicators, and under it a 24-hour ribbon for a single
+day with per-tracker summaries. It was accurate and it answered the wrong
+question: a day cell can say *how many*, and a one-day ribbon can say *when,
+yesterday*, but neither can say **when do feeds happen** — which is the question
+you actually have at 4am, and the one that only shows up by stacking many days
+against a common time axis. The month view also spent the whole screen on
+navigation, so the thing worth looking at was always one tap away.
+
+No trend lines, no week-over-week comparisons, no second chart until real data
+proves which one is wanted.
 
 **No export screen.** Litestream keeps a continuous replica, and the Dashboard's
 day view is what you would actually show a doctor. If a CSV is ever genuinely
@@ -296,9 +314,9 @@ Writes land in IndexedDB first and sync to the Pi in the background with retry.
 *Done when logging works in airplane mode and shows up on the Pi later.*
 
 **Phase 7 — Dashboard.**
-Day ribbon first (it carries most of the value), then the month calendar above
-it, then the per-tracker summary numbers.
-*Done when a night's feeds can be read at a glance.*
+The actogram: one tracker, days across, time of day down. Then the range
+control, then colouring by the tracker's field.
+*Done when a month of feeds shows its own pattern at a glance.*
 
 ## Decided
 

@@ -314,27 +314,32 @@ export function useDeleteEvent(profileId: string): UseMutationResult<void, Error
 /* ------------------------------------------------------------- timeline -- */
 
 /**
- * The Timeline's window of history: everything with `startAt >= from`, newest
- * first, straight from the server's own ordering.
+ * One bounded slice of history: `from <= startAt <= to`, newest first, straight
+ * from the server's own ordering.
  *
- * `from` is part of the key so widening the window is a new query rather than a
- * mutation of an existing one — but the key still *starts* with
+ * Both bounds are part of the key, so stepping to another day is a new query
+ * rather than a mutation of an existing one — but the key still *starts* with
  * `keys.events(profileId)`, so every existing invalidation of that prefix
- * refreshes it. No upper bound is sent: an event whose start time was corrected
- * into the future must not vanish from the list that would let you fix it.
+ * refreshes whichever day is on screen.
+ *
+ * The server filters on `startAt` alone and its `to` is inclusive, so a caller
+ * asking for a single day passes `endOfDay(day) - 1` and widens `from` by
+ * however far back a span may have begun. Both of those are day arithmetic and
+ * both belong to the caller; this hook only fetches what it is given.
  */
-export function useEventWindow(
+export function useEventRange(
   profileId: string | undefined,
   from: number,
+  to: number,
   limit: number,
 ): UseQueryResult<Event[]> {
   return useQuery({
-    queryKey: [...keys.events(profileId ?? ''), from, limit],
-    queryFn: () => api.listEvents({ profileId: profileId as string, from, limit }),
+    queryKey: [...keys.events(profileId ?? ''), from, to, limit],
+    queryFn: () => api.listEvents({ profileId: profileId as string, from, to, limit }),
     enabled: Boolean(profileId),
     staleTime: 15_000,
-    // A window that has already been fetched stays on screen while a wider one
-    // loads, so "load older" never blanks the list you were reading.
+    // The day already on screen stays there while the next one loads, so
+    // arrowing through dates never flashes an empty list between them.
     placeholderData: (previous) => previous,
   })
 }

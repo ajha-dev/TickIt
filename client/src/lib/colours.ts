@@ -1,28 +1,42 @@
 /**
  * Tracker and profile colours — see THEME.md.
  *
- * The five supplied UI colours span only 222°–271°, which is not enough
- * separation to identify a tracker at a glance. This list extends them to eight
- * hues, matched on lightness (~78–84%) and chroma so the set still reads as one
- * pastel family, but adjacent members are actually distinguishable on a dim
- * screen.
+ * These are *identity* colours, and they are a different job from the five
+ * supplied UI colours, which keep their roles untouched (accent, focus ring,
+ * running indicator). The first attempt at this list was the supplied pastels
+ * plus three more: eight hues all sitting at 78–87% lightness. Measured, that
+ * set collapsed — the worst adjacent pair was ΔE 3.0 under deuteranopia and
+ * ΔE 4.3 under *normal* vision, which is two colours a full-sighted reader
+ * cannot tell apart on a dim phone at 3am.
  *
- * These are *identity* colours. They are never used as a fill: a tile mixes
- * 8–12% of one into --ink-850 and reserves full chroma for dots and hairlines.
+ * The fix varies **lightness as well as hue**. Deuteranopia collapses the
+ * red–green axis, so no amount of hue spacing separates a pastel pink from a
+ * pastel aqua at the same lightness; a lightness step does. Each slot below
+ * holds a hue from the family and moves its lightness/chroma step until the
+ * whole set passes: OKLCH L 0.52–0.66, C ≥ 0.10, every adjacent pair ≥ ΔE 15
+ * under normal, protan and deutan vision, and every colour ≥ 3.4:1 against
+ * --ink-850 and --ink-900.
+ *
+ * The order is the CVD-safety mechanism and must not be reshuffled: it is what
+ * puts the best-separated pairs next to each other for a tracker set of two or
+ * three, which is the common case.
+ *
+ * They are never used as a fill: a tile mixes 8–12% of one into --ink-850 and
+ * reserves full chroma for dots, bars, ticks and hairlines.
  */
 
 export const TRACKER_COLOURS = [
-  '#8895B3', // 222° lavender grey
-  '#8E94F2', // 236° soft periwinkle
-  '#9FA0FF', // 239° wisteria
-  '#BBADFF', // 250° mauve
-  '#DAB6FC', // 271° orchid
-  '#F3B6E4', // 316° rose
-  '#8FD3E8', // 193° ice
-  '#A6E3C4', // 154° mint
+  '#A4517D', // 349° plum
+  '#7EA040', // 126° moss
+  '#9272CB', // 299° violet
+  '#29885E', // 160° fern
+  '#3A98D4', // 241° sky
+  '#CB6854', //  33° clay
+  '#4C66A5', // 266° indigo
+  '#22A89A', // 184° teal
 ] as const
 
-const FALLBACK: string = TRACKER_COLOURS[1]
+const FALLBACK: string = TRACKER_COLOURS[6]
 
 /**
  * The colour for the next tracker (or profile) in a set: the palette in order,
@@ -42,7 +56,7 @@ export function nextColour(used: Iterable<string | null | undefined>): string {
   return TRACKER_COLOURS[taken.size % TRACKER_COLOURS.length] ?? FALLBACK
 }
 
-/** Falls back to the primary accent when the server hands back something unusable. */
+/** Falls back to the family's indigo when the server hands back something unusable. */
 export function safeColour(colour: string | null | undefined): string {
   if (typeof colour === 'string' && /^#[0-9a-f]{3,8}$/i.test(colour)) return colour
   return FALLBACK

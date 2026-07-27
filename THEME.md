@@ -25,24 +25,52 @@ dim phone screen. Tracker colour exists to identify a tracker at a glance in
 the grid, on the day ribbon, and in the timeline. Five shades of the same
 purple cannot carry that.
 
-## Tracker palette — 8 hues, one family
+## Tracker palette — 8 slots, separated on lightness *and* hue
 
-Extended for *separability* while matched on lightness (~78–84%) and chroma so
-they still read as one pastel set. First five are the supplied colours.
+Extended for *separability*, and separated on **two** axes rather than one.
 
-| # | Hex | Hue | Name |
-|---|---|---|---|
-| 1 | `#8895B3` | 222° | lavender grey |
-| 2 | `#8E94F2` | 236° | soft periwinkle |
-| 3 | `#9FA0FF` | 239° | wisteria |
-| 4 | `#BBADFF` | 250° | mauve |
-| 5 | `#DAB6FC` | 271° | orchid |
-| 6 | `#F3B6E4` | 316° | rose |
-| 7 | `#8FD3E8` | 193° | ice |
-| 8 | `#A6E3C4` | 154° | mint |
+The first version of this table was the five supplied colours plus three more,
+all matched on lightness (~78–84%) so they read as one pastel set. Measured with
+a colour-vision validator, that set failed: the worst adjacent pair was ΔE 3.0
+under deuteranopia (`#8FD3E8` ↔ `#F3B6E4`) and ΔE 4.3 under *normal* vision
+(`#8E94F2` ↔ `#9FA0FF`, ~3° apart in hue — those two should never both have been
+tracker colours). Matching everything on lightness is what caused it:
+**deuteranopia collapses the red–green axis**, so two colours that differ only
+in hue along it become the same colour, and no hue spacing fixes that. A
+lightness difference survives every simulation.
 
-New trackers cycle this list in order, skipping colours already used in the
-current profile before repeating.
+So the slots below hold hues from the family and vary their lightness step:
+OKLCH L 0.52–0.66, C ≥ 0.10.
+
+| # | Hex | Hue | L | Name |
+|---|---|---|---|---|
+| 1 | `#A4517D` | 349° | 0.55 | plum |
+| 2 | `#7EA040` | 126° | 0.66 | moss |
+| 3 | `#9272CB` | 299° | 0.62 | violet |
+| 4 | `#29885E` | 160° | 0.56 | fern |
+| 5 | `#3A98D4` | 241° | 0.65 | sky |
+| 6 | `#CB6854` |  33° | 0.63 | clay |
+| 7 | `#4C66A5` | 266° | 0.52 | indigo |
+| 8 | `#22A89A` | 184° | 0.66 | teal |
+
+Verified: every adjacent pair ≥ ΔE 15 under normal vision (worst 17.7),
+≥ ΔE 15 under protanopia (15.9) and deuteranopia (15.4), and every colour
+≥ 3.4:1 against `--ink-850` and `--ink-900` as a non-text indicator.
+
+**The order is the safety mechanism, not a preference.** New trackers cycle this
+list in order, skipping colours already used in the current profile before
+repeating; reshuffling it puts weakly separated colours next to each other in a
+two-tracker profile.
+
+None of the five supplied colours appears here, and that is the point of the
+section above: they are UI identity, and they keep those roles untouched. The
+supplied hues are still represented — indigo and violet are the periwinkle and
+mauve hues re-stepped, teal and sky the ice hue, plum the rose hue — but at a
+lightness and chroma that can actually carry identity.
+
+Because these sit lower on the lightness ramp than the old pastels, the "never
+fill a large area" rule below matters more, not less: they are still only ever
+dots, bars, ticks, digits and 1px borders, and tile labels stay `--text`.
 
 ## Surfaces — stay near-black
 
