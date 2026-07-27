@@ -1,4 +1,4 @@
-# 1Password references, resolved at run time. Same shape as savethisread's:
+# 1Password references, resolved at run time:
 #
 #   op run --env-file=.env.tpl -- docker compose up -d
 #
@@ -17,8 +17,9 @@ VAPID_SUBJECT=op://prod/tickit-prod-env/VAPID_SUBJECT
 # The ONLY recovery path: there are no soft deletes and no export, so a
 # cascading delete noticed a week later is recoverable from here or not at all.
 #
-# The bucket and keys can be the same ones savethisread uses — REPLICA_PATH is
-# what keeps the two databases apart, so it must differ from savethisread's.
+# A bucket may be shared with other databases. The replica path is the ONLY
+# thing keeping them apart, so it must be unique to this one — see the warning
+# in docker/litestream.yml.
 LITESTREAM_REPLICA_BUCKET=op://prod/tickit-prod-env/LITESTREAM_REPLICA_BUCKET
 LITESTREAM_REPLICA_ENDPOINT=op://prod/tickit-prod-env/LITESTREAM_REPLICA_ENDPOINT
 LITESTREAM_REPLICA_PATH=op://prod/tickit-prod-env/LITESTREAM_REPLICA_PATH

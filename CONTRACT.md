@@ -47,7 +47,7 @@ TickIt/
    keys, with `PRAGMA foreign_keys = ON`.
 3. **`archivedAt` is not deletion** — it hides a tracker/profile from the home
    grid. Archived rows are still returned by list endpoints; the client filters.
-4. Server port **3002** (savethisread already occupies 3001 on the Pi).
+4. Server port **3002**.
 5. API is mounted under `/api`. Everything else serves the built SPA.
 
 ## Types

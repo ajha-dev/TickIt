@@ -1,8 +1,7 @@
 name: CI/CD
 
-# Mirrors the savethisread pipeline that already ships to this Pi: check, then
-# build each architecture on its own native runner, then join them into one
-# multi-arch manifest. Native runners rather than QEMU because `better-sqlite3`
+# Check, then build each architecture on its own native runner, then join them
+# into one multi-arch manifest. Native runners rather than QEMU because `better-sqlite3`
 # is a native module — cross-building it under emulation is slow and is exactly
 # the step that would fail quietly.
 

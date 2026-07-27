@@ -1,4 +1,4 @@
-# TickIt — same verbs as savethisread, so muscle memory carries.
+# TickIt.
 
 # Development — server on 3002, Vite on 5173 proxying /api
 dev:

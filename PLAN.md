@@ -196,7 +196,7 @@ needed it is one `sqlite3 -csv` away on the Pi — that does not need a UI.
 | DB | SQLite via `better-sqlite3` | One file, synchronous, more than fast enough for one human |
 | Migrations | Drizzle ORM + drizzle-kit | Typed schema, real migration files, no hand-written SQL drift |
 | Backup | Litestream → Cloudflare R2 | Continuous replication, restore-on-empty |
-| Packaging | Docker, multi-stage, single image | Same pattern as `savethisread` |
+| Packaging | Docker, multi-stage, single image | One container, one volume |
 | Host | Raspberry Pi on the home network | Self-owned, always on, silent |
 
 One process, one port, one SQLite file. The server serves the API under `/api`
@@ -211,8 +211,8 @@ reach for Postgres.
 
 ## Deployment
 
-Follow the `savethisread` pattern — it is already proven on this Pi, so there is
-nothing to invent here.
+Follow the pattern already proven on the target host — there is nothing to
+invent here.
 
 **One multi-stage image.** Stage 1 builds the client with Vite, stage 2 installs
 production server deps, the final stage copies both plus the Litestream binary.
@@ -235,7 +235,7 @@ from R2 first; then `litestream replicate -exec` runs the server as a child so
 replication and process lifetime are the same thing. Continuous replication to
 Cloudflare R2 beats a nightly `.backup`: a dead SD card costs seconds of data,
 not up to a day. Snapshot hourly, and set retention well above the 24h used for
-savethisread — this log is small and the history is the point.
+the default — this log is small and the history is the point.
 
 **Secrets** via `op run --env-file=.env.prod` as in the existing `justfile`.
 There is only really one secret set here (the R2 keys), but consistency beats a
@@ -247,7 +247,7 @@ second mechanism.
 **Reach.** The Pi is only on the home network, which means the app is unusable
 away from home unless something is done about it. Two layers:
 
-1. **Tailscale on the Pi host** (not in the container — same as savethisread).
+1. **Tailscale on the host**, not in the container.
    Reachable from any device on the tailnet, from anywhere, without
    port-forwarding, a public hostname, or exposing anything to the open
    internet. This is config, not code, and it is the single highest value hour

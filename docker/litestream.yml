@@ -9,13 +9,12 @@ dbs:
         # This was `${LITESTREAM_REPLICA_PATH:-db}`. Litestream expands only
         # plain ${VAR} — it does NOT understand `:-default` — so the whole
         # token resolved to an EMPTY path and this database replicated to the
-        # bucket root. savethisread shares that bucket and has the identical
-        # bug, so both were writing to the same prefix.
+        # bucket root, alongside another database sharing that bucket.
         #
         # Writes did not collide (each database gets its own generation id),
         # but RESTORE would have: `litestream restore` takes the newest
         # generation under its path, so restoring TickIt could have pulled
-        # savethisread's database into tickit.db — a wrong-data recovery at the
+        # the other database into tickit.db — a wrong-data recovery at the
         # exact moment backups matter. Not worth making configurable.
         path: tickit
         endpoint: ${LITESTREAM_REPLICA_ENDPOINT}
@@ -24,8 +23,7 @@ dbs:
         secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
         force-path-style: true
         snapshot-interval: 1h
-        # 30 days, not the 24h used for savethisread. This database is tiny
-        # (a few thousand rows a year) so the storage cost of a long window is
+        # 30 days. This database is tiny (a few thousand rows a year) so the storage cost of a long window is
         # negligible, and the history *is* the product — there is no export and
         # no soft delete, so point-in-time recovery is the only way back from a
         # mis-tapped cascading delete noticed a week later.
