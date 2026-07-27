@@ -86,9 +86,16 @@ jobs:
             --report-path gitleaks.sarif \
             --exit-code 1
 
-      # Upload even when the scan failed, so the findings are readable.
+      # Upload even when the scan failed, so the findings are readable — but
+      # ONLY where code scanning actually exists. Uploading SARIF needs GitHub
+      # code scanning, which is free on public repositories and a paid feature
+      # on private ones. Without this guard the job fails on an upload error
+      # while the scan itself passed, which reports a clean repo as broken.
+      #
+      # The scan above already fails the job on a finding via --exit-code 1, so
+      # skipping the upload loses the Security tab, never the gate.
       - name: Upload SARIF
-        if: always() && hashFiles('gitleaks.sarif') != ''
+        if: always() && hashFiles('gitleaks.sarif') != '' && !github.event.repository.private
         uses: github/codeql-action/upload-sarif@c54b30b7df092240050e69945842bc67aee0f0f4 # v4.37.3
         with:
           sarif_file: gitleaks.sarif
@@ -103,6 +110,11 @@ jobs:
   codeql:
     name: CodeQL
     runs-on: ubuntu-latest
+    # CodeQL reports by uploading to code scanning; there is no other output.
+    # That is free on public repositories and paid on private ones, so on a
+    # private repo the analysis succeeds and then fails at the upload. Skipped
+    # rather than failed — it starts working the moment the repo is public.
+    if: ${{ !github.event.repository.private }}
     permissions:
       contents: read
       security-events: write
