@@ -115,31 +115,10 @@ const TABS: Tab[] = [
       </>
     ),
   },
-  {
-    href: '/profiles',
-    label: 'Profiles',
-    icon: (active) => (
-      <>
-        <rect
-          x="4"
-          y="8.5"
-          width="16"
-          height="11"
-          rx="3"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          fill="none"
-        />
-        <path
-          d="M7 5.5h10"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-          opacity={active ? 0.9 : 0.5}
-        />
-      </>
-    ),
-  },
+  // Profiles is deliberately NOT a tab. Switching context is something you do
+  // from the Log screen's header, where you can see which profile you are in;
+  // managing them is a rare housekeeping task reached from that same switcher.
+  // Giving it a permanent quarter of the bar overstated how often it is used.
 ]
 
 export function TabBar() {

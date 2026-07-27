@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'wouter'
 
 import { ApiError } from '../api.ts'
 import { EventRow } from '../components/EventRow.tsx'
@@ -368,12 +367,6 @@ function EmptyDay({
       <p className="mt-2.5 text-[15px] leading-snug text-text-dim">
         Step back a day with the arrow, or pick a date from the calendar above.
       </p>
-      <Link
-        href="/"
-        className="tap mt-5 flex h-[60px] w-full items-center justify-center rounded-2xl bg-periwinkle text-[17px] font-semibold text-ink-900"
-      >
-        Go and log something
-      </Link>
     </div>
   )
 }
