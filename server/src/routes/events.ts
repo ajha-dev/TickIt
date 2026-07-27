@@ -157,11 +157,27 @@ eventRoutes.patch('/events/:id', async (c) => {
   }
 
   if (p.values !== undefined) {
-    // Validated against the tracker this event already belongs to, and against
-    // that tracker's current fields — an edit is held to today's definition.
     const tracker = db.select().from(trackers).where(eq(trackers.id, existing.trackerId)).get()
     if (!tracker) return c.json({ error: 'TRACKER_NOT_FOUND' }, 404)
-    const valuesError = validateEventValues(tracker.fields, p.values)
+
+    // Only NEW or CHANGED values are held to today's field definitions. A value
+    // that is byte-identical to what is already stored passes untouched, even if
+    // its field has since been deleted or had its kind changed.
+    //
+    // Without this, deleting a field would quietly make every event that ever
+    // used it uneditable: the client PATCHes an event by sending its values, the
+    // orphaned key comes back, and the server rejects the whole edit with
+    // UNKNOWN_FIELD. Correcting a mistimed entry would fail because of an
+    // unrelated definition change made months later.
+    //
+    // The rule is: you may not *add* data for a field that no longer exists, but
+    // echoing back history is not adding data.
+    const incoming = p.values
+    const changed: Record<string, string | number | boolean> = {}
+    for (const [fieldId, value] of Object.entries(incoming)) {
+      if (existing.values[fieldId] !== value) changed[fieldId] = value
+    }
+    const valuesError = validateEventValues(tracker.fields, changed)
     if (valuesError) return c.json({ error: valuesError }, 400)
   }
 

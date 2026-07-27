@@ -115,8 +115,8 @@ All responses are JSON. Errors: `{ error: string }` with 400 / 404 / 409.
 
 ### Trackers
 - `GET /api/trackers?profileId=…` → `Tracker[]` (sorted by `sortOrder`, then `createdAt`)
-- `POST /api/trackers` `{ profileId, name, type, colour?, icon? }` → `Tracker`
-- `PATCH /api/trackers/:id` `{ name?, colour?, icon?, sortOrder?, archivedAt? }` → `Tracker`
+- `POST /api/trackers` `{ profileId, name, type, colour?, icon?, fields? }` → `Tracker`
+- `PATCH /api/trackers/:id` `{ name?, colour?, icon?, sortOrder?, archivedAt?, fields? }` → `Tracker`
 - `DELETE /api/trackers/:id` → `204`
 - `GET /api/trackers/:id/delete-preview` → `{ events: number }`
 
@@ -140,8 +140,58 @@ All responses are JSON. Errors: `{ error: string }` with 400 / 404 / 409.
   **400** if the result would have `endAt < startAt`.
 - `DELETE /api/events/:id` → `204`
 
-`updatedAt` is set on every mutation. The client shows an "edited" marker when
+`updatedAt` is set on every mutation **except `POST /events/:id/stop`** —
+stopping is how a Span normally completes, not a correction to it. If stop
+bumped `updatedAt`, the client's "edited" marker would appear on every Span ever
+finished and mean nothing. The client shows that marker when
 `updatedAt !== createdAt`.
+
+`PATCH /api/events/:id` returns **400 `NOT_AN_INTERVAL`** if it would set a
+non-null `endAt` on an `INSTANT` event — that would silently turn a Moment into
+a Span whose tracker still says `INSTANT`.
+
+## Field definitions and values
+
+`Tracker.fields` is an ordered `FieldDef[]`, max 6 per tracker. Validation on
+create/patch:
+
+- `label` — 1–24 chars, required, unique within the tracker (case-insensitive).
+- `kind` — one of `CHOICE | NUMBER | BOOL | TEXT`.
+- `options` — **required and non-empty for `CHOICE`** (2–6 entries, each 1–16
+  chars), rejected with 400 `OPTIONS_REQUIRED` / `OPTIONS_NOT_ALLOWED` for any
+  other kind.
+- `unit` — optional, `NUMBER` only, ≤ 8 chars. 400 `UNIT_NOT_ALLOWED` otherwise.
+- `defaultValue` — optional; must typecheck against `kind`, and for `CHOICE`
+  must be one of `options`.
+- `id` — server-assigned uuidv7 if absent on create. **Editing a tracker
+  preserves existing field ids**; a field whose id matches an existing one is
+  updated in place, so already-logged values stay attached.
+
+`Event.values` is a `Record<fieldId, value>` validated against the tracker's
+current fields on `POST /api/events` and `PATCH /api/events/:id`:
+
+- Unknown `fieldId` → 400 `UNKNOWN_FIELD`.
+- Wrong type for the field's `kind` → 400 `BAD_FIELD_VALUE`.
+- `CHOICE` value not in `options` → 400 `BAD_FIELD_VALUE`.
+- **Every field is optional.** `{}` is always valid, for every tracker. Nothing
+  is ever required at log time — this is the app's first principle and the
+  server must not undermine it.
+
+**Deleting a field from a tracker does not touch logged events.** Their `values`
+keep the orphaned key; the client simply stops rendering it. Rewriting history
+to match a definition change would be a silent data edit.
+
+**On `PATCH /api/events/:id`, only new or changed values are validated.** A value
+byte-identical to what is already stored passes untouched, even if its field has
+since been deleted or had its `kind` changed. Otherwise deleting a field would
+quietly make every event that ever used it uneditable — the client PATCHes an
+event by sending its `values`, the orphaned key comes back, and the whole edit is
+rejected. Correcting a mistimed feed would fail because of an unrelated
+definition change made months later.
+
+The rule: you may not *add* data for a field that no longer exists, but echoing
+back history is not adding data. Verified — echoing an orphaned value returns
+200; changing that same orphaned value returns 400 `UNKNOWN_FIELD`.
 
 ## Seeding
 

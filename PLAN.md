@@ -117,7 +117,18 @@ Notes on the shape:
   Stop button.
 - A grid of tracker buttons below. Tap a Moment tracker → logged, with a brief
   undo affordance. Tap a Span tracker → starts, moves to the pinned area.
-- Nothing else. No stats, no nav bar competing for the thumb.
+
+**Navigation is a bottom tab bar.** This replaces the original "no nav bar on
+Home" rule, which was written when the app had one screen worth visiting. With
+Log, Trackers, Profiles — and Timeline and Dashboard coming — a hidden top-right
+link would bury most of the app behind the least reachable pixel on the phone.
+
+The rule the original principle was protecting still holds, so it is restated
+as a constraint on the bar rather than a ban: **the tab bar must never compete
+with a log target.** It is compact, sits below the safe-area inset, uses icons
+with small labels, and the tracker grid is laid out so no tile is within a
+thumb-slip of it. Tabs are for navigation between sessions of use; logging is
+what happens without navigating at all.
 
 **Timeline** — reverse-chronological list, grouped by day, current profile only.
 Tap an event to edit time, fields, or note. Swipe to delete. This is where
