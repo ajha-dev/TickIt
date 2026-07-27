@@ -65,8 +65,26 @@ export async function sendPush(
     )
     return { kind: 'sent' }
   } catch (err) {
-    const status = (err as { statusCode?: number }).statusCode
+    const e = err as { statusCode?: number; body?: string; message?: string }
+    const status = e.statusCode
     if (status === 404 || status === 410) return { kind: 'gone' }
-    return { kind: 'failed', error: (err as Error).message }
+
+    // `web-push` throws a WebPushError whose `.message` is always the same
+    // useless string — "Received unexpected response code". Everything that
+    // identifies the problem is on `.statusCode` and `.body`, so a log built
+    // from `.message` alone says nothing you can act on. Ask how we know.
+    const body = (e.body ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
+    const parts = [status ? `HTTP ${status}` : e.message ?? 'unknown error']
+    if (body) parts.push(body)
+
+    // The one failure worth naming outright, because the cause is not in the
+    // response. Apple validates the VAPID JWT's `sub` claim and rejects a
+    // non-routable address — `mailto:tickit@localhost` fails, a real mailbox
+    // does not. Every push to Apple fails with 403 and nothing says why.
+    if (status === 403) {
+      parts.push('— check VAPID_SUBJECT is a real mailto: or https: URL (Apple rejects non-routable ones)')
+    }
+
+    return { kind: 'failed', error: parts.join(' ') }
   }
 }

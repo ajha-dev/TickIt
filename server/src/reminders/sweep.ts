@@ -130,7 +130,17 @@ export async function sweepOnce(now: number): Promise<void> {
       if (outcome.kind === 'gone') {
         dead.add(sub.endpoint)
       } else if (outcome.kind === 'failed') {
-        console.warn(`[tickit] push failed for ${sub.endpoint}: ${outcome.error}`)
+        // The endpoint is ~200 characters of opaque token and pushes the part
+        // that matters off the line. Host plus a short tail is enough to tell
+        // which service and which device, without burying the reason.
+        const host = (() => {
+          try {
+            return new URL(sub.endpoint).host
+          } catch {
+            return 'unknown-host'
+          }
+        })()
+        console.warn(`[tickit] push failed (${host}…${sub.endpoint.slice(-8)}): ${outcome.error}`)
       }
     }
   }
