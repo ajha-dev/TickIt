@@ -289,7 +289,7 @@ export function useStopSpan(profileId: string): UseMutationResult<Event, Error, 
   })
 }
 
-/** Undo: hard-deletes the event that was just created. */
+/** Undo, and the Timeline's delete: hard-deletes the event. There is no undo. */
 export function useDeleteEvent(profileId: string): UseMutationResult<void, Error, string> {
   const qc = useQueryClient()
   return useMutation({
@@ -305,6 +305,68 @@ export function useDeleteEvent(profileId: string): UseMutationResult<void, Error
       if (ctx) qc.setQueryData(keys.running(profileId), ctx.previous)
     },
     onSettled: () => {
+      void qc.invalidateQueries({ queryKey: keys.running(profileId) })
+      void qc.invalidateQueries({ queryKey: keys.events(profileId) })
+    },
+  })
+}
+
+/* ------------------------------------------------------------- timeline -- */
+
+/**
+ * The Timeline's window of history: everything with `startAt >= from`, newest
+ * first, straight from the server's own ordering.
+ *
+ * `from` is part of the key so widening the window is a new query rather than a
+ * mutation of an existing one — but the key still *starts* with
+ * `keys.events(profileId)`, so every existing invalidation of that prefix
+ * refreshes it. No upper bound is sent: an event whose start time was corrected
+ * into the future must not vanish from the list that would let you fix it.
+ */
+export function useEventWindow(
+  profileId: string | undefined,
+  from: number,
+  limit: number,
+): UseQueryResult<Event[]> {
+  return useQuery({
+    queryKey: [...keys.events(profileId ?? ''), from, limit],
+    queryFn: () => api.listEvents({ profileId: profileId as string, from, limit }),
+    enabled: Boolean(profileId),
+    staleTime: 15_000,
+    // A window that has already been fetched stays on screen while a wider one
+    // loads, so "load older" never blanks the list you were reading.
+    placeholderData: (previous) => previous,
+  })
+}
+
+/**
+ * Corrects a logged event: its times, its captured value, its note.
+ *
+ * Unlike `useCaptureValues` this is an admitted edit — the server bumps
+ * `updatedAt`, and the row grows its "edited" marker. That is the entire audit
+ * story (PLAN.md), so the marker must never be suppressed here.
+ */
+export function useUpdateEvent(
+  profileId: string,
+): UseMutationResult<
+  Event,
+  Error,
+  {
+    id: string
+    patch: {
+      startAt?: number
+      /** Never send this for an INSTANT — the server answers 400 NOT_AN_INTERVAL. */
+      endAt?: number | null
+      values?: Record<string, string | number | boolean>
+      note?: string | null
+    }
+  }
+> {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, patch }) => api.updateEvent(id, patch),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.events(profileId) })
       void qc.invalidateQueries({ queryKey: keys.running(profileId) })
     },
   })

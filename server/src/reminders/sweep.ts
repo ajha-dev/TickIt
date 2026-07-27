@@ -59,15 +59,16 @@ export async function sweepOnce(now: number): Promise<void> {
 
     if (decision === 'NOT_IDLE' || decision === 'ALREADY_FIRED') continue
 
-    // Both FIRE and QUIET consume the idle period. Quiet hours *suppress* —
-    // marking the period spent is what stops a 03:10 reminder resurfacing the
-    // moment the window closes at 07:00, hours stale.
+    // Quiet hours HOLD the idle period rather than consuming it: no stamp, so
+    // the first sweep after the window closes fires with a freshly computed
+    // body ("Nothing logged for 10h"). Consuming it here would mean sleeping
+    // through the night and being told nothing at all in the morning.
+    if (decision === 'QUIET') continue
+
     db.update(reminders)
       .set({ lastFiredAt: now, updatedAt: now })
       .where(eq(reminders.id, r.id))
       .run()
-
-    if (decision === 'QUIET') continue
 
     const payload = buildPayload(r.trackerName, r.trackerId, now - anchor)
     for (const sub of subs) {

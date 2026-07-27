@@ -202,6 +202,69 @@ The rule: you may not *add* data for a field that no longer exists, but echoing
 back history is not adding data. Verified — echoing an orphaned value returns
 200; changing that same orphaned value returns 400 `UNKNOWN_FIELD`.
 
+## Reminders
+
+One kind only: **idle reminders** — "nothing logged on this tracker for N hours".
+That is the feeding case and the one the plan names. Fixed-time reminders
+("meds at 09:00") are a genuinely different feature and are not in scope.
+
+```ts
+Reminder { id, trackerId, profileId,
+           afterMs,             // idle threshold
+           quietFromMin,        // null, or minutes past LOCAL midnight
+           quietToMin,          // null, or minutes past local midnight; may wrap
+           timeZone,            // IANA name, e.g. "Asia/Kolkata"
+           enabled, lastFiredAt,
+           createdAt, updatedAt }
+
+PushSub  { id, endpoint, p256dh, auth, createdAt, lastSeenAt }
+```
+
+- `GET /api/reminders?profileId=…` → `Reminder[]`
+- `POST /api/reminders` `{ trackerId, afterMs, quietFromMin?, quietToMin?, timeZone }` → `Reminder`
+- `PATCH /api/reminders/:id` `{ afterMs?, quietFromMin?, quietToMin?, timeZone?, enabled? }`
+- `DELETE /api/reminders/:id` → `204`
+- `GET /api/push/key` → `{ publicKey }` (VAPID public key)
+- `POST /api/push/subscribe` `{ endpoint, keys: { p256dh, auth } }` → `204`, idempotent
+- `POST /api/push/unsubscribe` `{ endpoint }` → `204`
+
+**One tracker, one reminder** — 409 `REMINDER_EXISTS` on a duplicate.
+`afterMs` is clamped to 5 minutes … 48 hours.
+
+### Firing rules
+
+A sweep runs every 60s. For each enabled reminder:
+
+- **Anchor** = the tracker's most recent activity, `max(endAt ?? startAt)` across
+  its events, or the reminder's `createdAt` if it has never been used. A
+  brand-new reminder on a dormant tracker must not fire instantly.
+- Fire when `now - anchor >= afterMs`.
+- **Fire once per idle period**, not every sweep: skip if
+  `lastFiredAt >= anchor`. Logging an event moves the anchor forward and re-arms
+  the reminder. A tracker nobody touches must go quiet after one notification,
+  never nag every minute.
+- **Quiet hours hold the idle period, they do not consume it.** A reminder due
+  at 03:10 inside a 01:00–07:00 window stays silent and `lastFiredAt` is *not*
+  stamped, so it fires once at 07:00 when the window closes. The body is
+  recomputed at send time — "Nothing logged for 10h" — so nothing stale is ever
+  delivered. Consuming the period instead would mean sleeping through the night
+  and being told nothing at all in the morning, which is the failure this
+  feature exists to prevent. Still exactly one notification per idle period.
+- A dead push subscription (`404`/`410` from the push service) is deleted.
+
+**This is the one place the server does local-time arithmetic**, and it is why
+`timeZone` is stored on the reminder. Everywhere else the server handles only
+UTC epoch millis and the client resolves local time — see the top of this file.
+Quiet hours are inherently a wall-clock concept, so the exception is unavoidable;
+it is confined to evaluating the quiet window and nothing else.
+
+### Delivery
+
+Web Push with VAPID. Requires HTTPS and a service worker, so it only works once
+the app is installed and served over TLS — on iOS, Web Push is available *only*
+to a PWA added to the Home Screen (16.4+). The Pi needs outbound internet to
+reach the push services.
+
 ## Seeding
 
 On boot, if the `profiles` table is empty, insert one profile:

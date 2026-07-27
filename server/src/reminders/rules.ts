@@ -79,10 +79,19 @@ export function inQuietWindow(minuteOfDay: number, from: number, to: number): bo
  *    silence has already been reported. Logging an event moves the anchor
  *    forward, which re-arms the reminder. Without this the user gets a
  *    notification every 60 seconds, forever.
- * 2. **Quiet hours suppress, they do not queue.** A reminder due at 03:10
- *    inside a 01:00–07:00 window is dropped. The caller consumes the idle
- *    period on `QUIET` exactly as it does on `FIRE`, so it does not resurface
- *    at 07:00 four hours stale saying something false.
+ * 2. **Quiet hours hold, they do not consume.** A reminder due at 03:10 inside
+ *    a 01:00–07:00 window stays silent, and the caller must NOT stamp
+ *    `lastFiredAt` — so it fires once at 07:00, when the window closes.
+ *
+ *    The worry that motivated the opposite rule was a stale message arriving
+ *    hours late. That does not apply: the notification body is recomputed at
+ *    send time, so the 07:00 alert reads "Nothing logged for 10h" — true, and
+ *    the single most useful thing it could say. Consuming the period instead
+ *    would mean sleeping through the night and being told nothing at all,
+ *    which is the failure the feature exists to prevent.
+ *
+ *    Still exactly one notification per idle period: the first sweep after the
+ *    window closes fires and stamps, and every later sweep sees ALREADY_FIRED.
  */
 export function shouldFire(input: FireInput): FireDecision {
   const { now, anchor, afterMs, lastFiredAt, quietFromMin, quietToMin, timeZone } = input

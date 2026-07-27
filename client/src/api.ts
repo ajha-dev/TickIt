@@ -63,7 +63,14 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     throw new ApiError(0, 'NETWORK', 'Could not reach the server.')
   }
 
-  if (res.status === 204) return undefined as T
+  if (res.status === 204) {
+    // Nothing to parse — but the body stream still has to be drained. Leaving
+    // it open makes Chrome cancel the request after the fact, so a perfectly
+    // successful DELETE shows up in devtools (and in any request-failure
+    // monitoring) as net::ERR_ABORTED.
+    await res.arrayBuffer().catch(() => undefined)
+    return undefined as T
+  }
 
   const payload = (await res.json().catch(() => null)) as unknown
 

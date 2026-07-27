@@ -98,12 +98,37 @@ check('DOES fire again after a new event moves the anchor', () => {
 })
 
 check('does NOT fire inside a quiet window', () => {
-  // Due at 03:10 local, inside 01:00–07:00. Dropped, never queued.
+  // Due at 03:10 local, inside 01:00–07:00. Held silent.
   const now = ist(3, 10)
   const decision = shouldFire(
     input({ now, anchor: now - 4 * HOUR, quietFromMin: 60, quietToMin: 420 }),
   )
   assert.equal(decision, 'QUIET')
+})
+
+check('a period held by quiet hours fires when the window closes', () => {
+  // The scenario the whole rule exists for: last logged 21:00, threshold 3h,
+  // quiet 22:00–07:00. Due at 00:00 but held. The sweep must NOT stamp
+  // lastFiredAt on QUIET, so at 07:00 — still idle, now ten hours — it fires
+  // exactly once with a freshly computed body. Sleeping through the night and
+  // being told nothing in the morning is the failure this prevents.
+  const quiet = { quietFromMin: 22 * 60, quietToMin: 7 * 60 }
+  const anchor = ist(21, 0) - 24 * HOUR // 21:00 the previous evening
+  const afterMs = 3 * HOUR
+
+  const held = shouldFire(input({ now: ist(0, 0), anchor, afterMs, lastFiredAt: null, ...quiet }))
+  assert.equal(held, 'QUIET')
+
+  // lastFiredAt is still null precisely because QUIET did not consume it.
+  const atClose = shouldFire(input({ now: ist(7, 0), anchor, afterMs, lastFiredAt: null, ...quiet }))
+  assert.equal(atClose, 'FIRE')
+  assert.equal(formatIdle(ist(7, 0) - anchor), '10h')
+
+  // And having fired, it stays quiet until an event moves the anchor.
+  const after = shouldFire(
+    input({ now: ist(7, 1), anchor, afterMs, lastFiredAt: ist(7, 0), ...quiet }),
+  )
+  assert.equal(after, 'ALREADY_FIRED')
 })
 
 check('DOES fire outside the quiet window', () => {

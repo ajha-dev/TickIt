@@ -41,6 +41,56 @@ const TABS: Tab[] = [
     ),
   },
   {
+    href: '/timeline',
+    label: 'Timeline',
+    icon: (active) => (
+      <>
+        <path
+          d="M6 4.5v15"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          opacity={active ? 0.9 : 0.5}
+        />
+        <circle cx="6" cy="8" r="2.1" fill="currentColor" />
+        <circle cx="6" cy="16" r="2.1" fill="currentColor" opacity={active ? 1 : 0.75} />
+        <path
+          d="M11 8h8M11 16h5"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
+      </>
+    ),
+  },
+  {
+    href: '/calendar',
+    label: 'Calendar',
+    icon: (active) => (
+      <>
+        <rect
+          x="3.6"
+          y="5.5"
+          width="16.8"
+          height="14"
+          rx="3"
+          stroke="currentColor"
+          strokeWidth="1.55"
+          fill="none"
+        />
+        <path
+          d="M3.6 10h16.8"
+          stroke="currentColor"
+          strokeWidth="1.55"
+          opacity={active ? 0.9 : 0.55}
+        />
+        <circle cx="8.4" cy="13.8" r="1.25" fill="currentColor" />
+        <circle cx="12" cy="13.8" r="1.25" fill="currentColor" opacity={active ? 1 : 0.6} />
+        <circle cx="15.6" cy="16.6" r="1.25" fill="currentColor" opacity={active ? 1 : 0.6} />
+      </>
+    ),
+  },
+  {
     href: '/trackers',
     label: 'Trackers',
     icon: () => (

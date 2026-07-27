@@ -4,8 +4,10 @@ import { Link, Route, Switch } from 'wouter'
 import { TabBar } from './components/TabBar.tsx'
 import { useProfileSelection } from './lib/profile.ts'
 import { useProfiles } from './lib/queries.ts'
+import { CalendarScreen } from './screens/Calendar.tsx'
 import { Home } from './screens/Home.tsx'
 import { ProfilesScreen } from './screens/Profiles.tsx'
+import { TimelineScreen } from './screens/Timeline.tsx'
 import { TrackersScreen } from './screens/Trackers.tsx'
 
 export function App() {
@@ -39,6 +41,14 @@ export function App() {
           ) : (
             <NoProfile />
           )}
+        </Route>
+
+        <Route path="/timeline">
+          {profile ? <TimelineScreen profile={profile} /> : <NoProfile />}
+        </Route>
+
+        <Route path="/calendar">
+          {profile ? <CalendarScreen profile={profile} /> : <NoProfile />}
         </Route>
 
         <Route path="/trackers">
