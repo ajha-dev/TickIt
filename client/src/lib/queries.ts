@@ -7,6 +7,8 @@ import {
 } from '@tanstack/react-query'
 
 import * as api from '../api.ts'
+import { AlreadyRunningError } from '../api.ts'
+import { cancelPending, enqueue, flush, uuidv7 } from './outbox.ts'
 import type { Event, FieldDefInput, Profile, Tracker, TrackerType } from '../types.ts'
 
 export const keys = {
@@ -177,15 +179,17 @@ export function useRunning(profileId: string | undefined): UseQueryResult<Event[
   })
 }
 
-const OPTIMISTIC_PREFIX = 'optimistic:'
 
-export function isOptimistic(event: Event): boolean {
-  return event.id.startsWith(OPTIMISTIC_PREFIX)
-}
-
-function optimisticEvent(tracker: Tracker, startAt: number): Event {
+/**
+ * The event exactly as it will exist on the server, built at tap time.
+ *
+ * `startAt` is *now* — the moment of the tap — and the outbox never recomputes
+ * it. A feed logged at 03:12 with no signal must land as 03:12, not as whenever
+ * the phone next found the network.
+ */
+function localEvent(tracker: Tracker, id: string, startAt: number): Event {
   return {
-    id: `${OPTIMISTIC_PREFIX}${tracker.id}:${startAt}`,
+    id,
     trackerId: tracker.id,
     profileId: tracker.profileId,
     type: tracker.type,
@@ -203,15 +207,129 @@ interface RunningContext {
 }
 
 /**
- * Logs a Moment. Nothing on Home renders a Moment, so the "optimism" here is
- * the toast and the haptic, which fire before the request resolves.
+ * Apply a local change to every cached slice of the timeline for this profile.
+ *
+ * The Timeline's queries are keyed `['events', profileId, from, to, limit]`, so
+ * the key itself says whether a newly logged event belongs in that slice. This
+ * is what makes an offline log show up in history rather than only in the
+ * running strip.
+ */
+function patchEventCaches(
+  qc: ReturnType<typeof useQueryClient>,
+  profileId: string,
+  change:
+    | { kind: 'insert'; event: Event }
+    | { kind: 'remove'; id: string }
+    | { kind: 'merge'; id: string; patch: Partial<Event> },
+): void {
+  for (const query of qc.getQueryCache().findAll({ queryKey: keys.events(profileId) })) {
+    const rows = query.state.data as Event[] | undefined
+    if (!Array.isArray(rows)) continue
+
+    if (change.kind === 'remove') {
+      qc.setQueryData<Event[]>(
+        query.queryKey,
+        rows.filter((e) => e.id !== change.id),
+      )
+      continue
+    }
+
+    if (change.kind === 'merge') {
+      qc.setQueryData<Event[]>(
+        query.queryKey,
+        rows.map((e) => (e.id === change.id ? { ...e, ...change.patch } : e)),
+      )
+      continue
+    }
+
+    const [, , from, to, limit] = query.queryKey as [string, string, number?, number?, number?]
+    const { startAt } = change.event
+    if (typeof from === 'number' && startAt < from) continue
+    if (typeof to === 'number' && startAt > to) continue
+
+    const next = [...rows.filter((e) => e.id !== change.event.id), change.event].sort(
+      (a, b) => b.startAt - a.startAt,
+    )
+    qc.setQueryData<Event[]>(query.queryKey, typeof limit === 'number' ? next.slice(0, limit) : next)
+  }
+}
+
+/**
+ * The event as it now reads on this device, for a mutation that has only been
+ * queued. Callers get a real `Event` back exactly as they did when the request
+ * was synchronous, so nothing downstream has to know about the queue.
+ *
+ * `updatedAt` is bumped here for the same reason the server bumps it: an
+ * edited event carries its "edited" marker straight away rather than acquiring
+ * it minutes later when the queue drains.
+ */
+function mergeLocally(
+  qc: ReturnType<typeof useQueryClient>,
+  profileId: string,
+  eventId: string,
+  patch: Partial<Event>,
+): Event {
+  const now = Date.now()
+  const pools = [
+    qc.getQueryData<Event[]>(keys.running(profileId)) ?? [],
+    ...qc
+      .getQueryCache()
+      .findAll({ queryKey: keys.events(profileId) })
+      .map((q) => (Array.isArray(q.state.data) ? (q.state.data as Event[]) : [])),
+  ]
+  for (const pool of pools) {
+    const found = pool.find((e) => e.id === eventId)
+    if (found) return { ...found, ...patch, updatedAt: now }
+  }
+  // Nothing cached for it — the queue still carries the truth, so answer with
+  // the least the caller can use rather than failing the mutation.
+  return {
+    id: eventId,
+    trackerId: '',
+    profileId,
+    type: 'INSTANT',
+    startAt: now,
+    endAt: null,
+    values: {},
+    note: null,
+    createdAt: now,
+    ...patch,
+    updatedAt: now,
+  }
+}
+
+/**
+ * Logs a Moment.
+ *
+ * The write is durable in IndexedDB before this resolves, so the tap succeeds
+ * with no network at all and the undo toast gets a real event id immediately
+ * rather than waiting on the Pi. The send is a background detail from here.
  */
 export function useLogMoment(profileId: string): UseMutationResult<Event, Error, Tracker> {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (tracker) => api.createEvent({ trackerId: tracker.id }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: keys.events(profileId) })
+    mutationFn: async (tracker) => {
+      const startAt = Date.now()
+      const event = localEvent(tracker, uuidv7(), startAt)
+      await enqueue(
+        {
+          kind: 'create',
+          id: event.id,
+          profileId: tracker.profileId,
+          label: tracker.name,
+          trackerId: tracker.id,
+          type: tracker.type,
+          startAt,
+          values: {},
+          note: null,
+        },
+        startAt,
+      )
+      void flush()
+      return event
+    },
+    onSuccess: (event) => {
+      patchEventCaches(qc, profileId, { kind: 'insert', event })
     },
   })
 }
@@ -232,7 +350,11 @@ export function useCaptureValues(
 > {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ eventId, values }) => api.updateEvent(eventId, { values }),
+    mutationFn: async ({ eventId, values }) => {
+      await enqueue({ kind: 'patch', id: eventId, profileId, label: 'Values', patch: { values } })
+      void flush()
+      return mergeLocally(qc, profileId, eventId, { values })
+    },
     onSuccess: (event) => {
       const key = keys.running(profileId)
       const previous = qc.getQueryData<Event[]>(key)
@@ -242,40 +364,79 @@ export function useCaptureValues(
           previous.map((e) => (e.id === event.id ? event : e)),
         )
       }
-      void qc.invalidateQueries({ queryKey: keys.events(profileId) })
+      patchEventCaches(qc, profileId, { kind: 'merge', id: event.id, patch: { values: event.values } })
     },
   })
 }
 
-/** Starts a Span. The pinned card appears before the server has answered. */
+/**
+ * Starts a Span. The pinned card appears immediately — with or without a
+ * network, because the event is durable in IndexedDB before this resolves.
+ *
+ * The "already running" check happens locally against the running list rather
+ * than waiting for the server's 409, so the stop-first prompt still appears
+ * offline. A 409 from the server (another device started it) is a permanent
+ * failure and is surfaced by the outbox instead.
+ */
 export function useStartSpan(profileId: string): UseMutationResult<Event, Error, Tracker> {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (tracker) => api.createEvent({ trackerId: tracker.id }),
-    onMutate: async (tracker): Promise<RunningContext> => {
+    mutationFn: async (tracker) => {
       const key = keys.running(profileId)
-      await qc.cancelQueries({ queryKey: key })
-      const previous = qc.getQueryData<Event[]>(key)
-      qc.setQueryData<Event[]>(key, [...(previous ?? []), optimisticEvent(tracker, Date.now())])
-      return { previous }
+      const previous = qc.getQueryData<Event[]>(key) ?? []
+      const clash = previous.find((e) => e.trackerId === tracker.id && e.endAt === null)
+      if (clash) throw new AlreadyRunningError(clash.id)
+
+      const startAt = Date.now()
+      const event = localEvent(tracker, uuidv7(), startAt)
+      // Pinned before the write is even durable: the queue write is a
+      // millisecond of IndexedDB, and rolled back below if it somehow fails.
+      qc.setQueryData<Event[]>(key, [...previous, event])
+      try {
+        await enqueue(
+          {
+            kind: 'create',
+            id: event.id,
+            profileId: tracker.profileId,
+            label: tracker.name,
+            trackerId: tracker.id,
+            type: tracker.type,
+            startAt,
+            values: {},
+            note: null,
+          },
+          startAt,
+        )
+      } catch (error) {
+        qc.setQueryData<Event[]>(key, previous)
+        throw error
+      }
+      void flush()
+      return event
     },
-    onError: (_err, _tracker, ctx) => {
-      if (ctx) qc.setQueryData(keys.running(profileId), ctx.previous)
-    },
-    onSettled: () => {
-      void qc.invalidateQueries({ queryKey: keys.running(profileId) })
+    onSuccess: (event) => {
+      patchEventCaches(qc, profileId, { kind: 'insert', event })
     },
   })
 }
 
 /** Stops a Span. The card leaves the pinned area on tap. */
-export function useStopSpan(profileId: string): UseMutationResult<Event, Error, string> {
+export function useStopSpan(profileId: string): UseMutationResult<Event | null, Error, string> {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (eventId) => api.stopEvent(eventId),
-    onMutate: async (eventId): Promise<RunningContext> => {
+    mutationFn: async (eventId) => {
+      // The moment of the tap, not the moment of sync — a span that ended at
+      // 03:40 must not be recorded as ending when the phone reconnected.
+      const endAt = Date.now()
+      const existing = (qc.getQueryData<Event[]>(keys.running(profileId)) ?? []).find(
+        (e) => e.id === eventId,
+      )
+      await enqueue({ kind: 'stop', id: eventId, profileId, label: 'Stop', endAt }, endAt)
+      void flush()
+      return existing ? { ...existing, endAt } : null
+    },
+    onMutate: (eventId): RunningContext => {
       const key = keys.running(profileId)
-      await qc.cancelQueries({ queryKey: key })
       const previous = qc.getQueryData<Event[]>(key)
       qc.setQueryData<Event[]>(key, (previous ?? []).filter((e) => e.id !== eventId))
       return { previous }
@@ -283,30 +444,36 @@ export function useStopSpan(profileId: string): UseMutationResult<Event, Error, 
     onError: (_err, _eventId, ctx) => {
       if (ctx) qc.setQueryData(keys.running(profileId), ctx.previous)
     },
-    onSettled: () => {
-      void qc.invalidateQueries({ queryKey: keys.running(profileId) })
+    onSuccess: (event) => {
+      if (event) patchEventCaches(qc, profileId, { kind: 'merge', id: event.id, patch: { endAt: event.endAt } })
     },
   })
 }
 
-/** Undo, and the Timeline's delete: hard-deletes the event. There is no undo. */
+/**
+ * Undo, and the Timeline's delete: hard-deletes the event. There is no undo.
+ *
+ * An event whose create is still queued is dropped from the queue outright
+ * rather than being created and then deleted — undoing a log the Pi has never
+ * heard of should cost nothing.
+ */
 export function useDeleteEvent(profileId: string): UseMutationResult<void, Error, string> {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (eventId) => api.deleteEvent(eventId),
-    onMutate: async (eventId): Promise<RunningContext> => {
+    mutationFn: async (eventId) => {
+      if (await cancelPending(eventId)) return
+      await enqueue({ kind: 'delete', id: eventId, profileId, label: 'Delete' })
+      void flush()
+    },
+    onMutate: (eventId): RunningContext => {
       const key = keys.running(profileId)
-      await qc.cancelQueries({ queryKey: key })
       const previous = qc.getQueryData<Event[]>(key)
       qc.setQueryData<Event[]>(key, (previous ?? []).filter((e) => e.id !== eventId))
+      patchEventCaches(qc, profileId, { kind: 'remove', id: eventId })
       return { previous }
     },
     onError: (_err, _eventId, ctx) => {
       if (ctx) qc.setQueryData(keys.running(profileId), ctx.previous)
-    },
-    onSettled: () => {
-      void qc.invalidateQueries({ queryKey: keys.running(profileId) })
-      void qc.invalidateQueries({ queryKey: keys.events(profileId) })
     },
   })
 }
@@ -369,10 +536,25 @@ export function useUpdateEvent(
 > {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, patch }) => api.updateEvent(id, patch),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: keys.events(profileId) })
-      void qc.invalidateQueries({ queryKey: keys.running(profileId) })
+    mutationFn: async ({ id, patch }) => {
+      await enqueue({ kind: 'patch', id, profileId, label: 'Edit', patch })
+      void flush()
+      return mergeLocally(qc, profileId, id, patch as Partial<Event>)
+    },
+    onSuccess: (event) => {
+      patchEventCaches(qc, profileId, { kind: 'merge', id: event.id, patch: event })
+      const key = keys.running(profileId)
+      const previous = qc.getQueryData<Event[]>(key)
+      if (previous) {
+        qc.setQueryData<Event[]>(
+          key,
+          // An edit that gives a running span an end time takes it off the
+          // pinned strip, exactly as stopping it would.
+          previous
+            .map((e) => (e.id === event.id ? event : e))
+            .filter((e) => e.type !== 'INTERVAL' || e.endAt === null),
+        )
+      }
     },
   })
 }

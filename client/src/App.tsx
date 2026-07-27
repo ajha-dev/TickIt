@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Link, Route, Switch } from 'wouter'
 
+import { OutboxStatus } from './components/OutboxStatus.tsx'
 import { TabBar } from './components/TabBar.tsx'
 import { useProfileSelection } from './lib/profile.ts'
 import { useProfiles } from './lib/queries.ts'
@@ -15,25 +16,39 @@ export function App() {
   const { profile, selectable, select } = useProfileSelection(profilesQuery.data)
 
   if (profilesQuery.isPending) {
-    return <Splash line="warming up" />
+    return (
+      <>
+        <OutboxStatus />
+        <Splash line="warming up" />
+      </>
+    )
   }
 
+  // Reads fail honestly — a stale health log presented as current is worse than
+  // an error. Writes do not: the outbox pill rides along on this screen so a
+  // queue that is waiting out the outage is visible from the one place the app
+  // can still be seen when everything else is unreachable.
   if (profilesQuery.isError) {
     return (
-      <Splash line="no connection">
-        <button
-          type="button"
-          onClick={() => void profilesQuery.refetch()}
-          className="tap mt-8 h-[60px] w-full max-w-xs rounded-2xl border border-ink-600 bg-ink-800 text-[17px]"
-        >
-          Try again
-        </button>
-      </Splash>
+      <>
+        <OutboxStatus />
+        <Splash line="no connection">
+          <button
+            type="button"
+            onClick={() => void profilesQuery.refetch()}
+            className="tap mt-8 h-[60px] w-full max-w-xs rounded-2xl border border-ink-600 bg-ink-800 text-[17px]"
+          >
+            Try again
+          </button>
+        </Splash>
+      </>
     )
   }
 
   return (
     <>
+      <OutboxStatus />
+
       <Switch>
         <Route path="/">
           {profile ? (

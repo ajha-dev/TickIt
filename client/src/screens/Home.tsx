@@ -8,9 +8,10 @@ import { Sheet, SheetButton } from '../components/Sheet.tsx'
 import { TrackerTile } from '../components/TrackerTile.tsx'
 import { UndoToast, type ToastState } from '../components/UndoToast.tsx'
 import { safeColour } from '../lib/colours.ts'
+import { useGridReorder } from '../lib/gridReorder.ts'
+import { isPending } from '../lib/outbox.ts'
 import { hapticLog, hapticStop, hapticUndo } from '../lib/haptics.ts'
 import {
-  isOptimistic,
   useCaptureValues,
   useDeleteEvent,
   useLogMoment,
@@ -20,6 +21,7 @@ import {
   useTrackers,
 } from '../lib/queries.ts'
 import { formatClock } from '../lib/time.ts'
+import { useReorderTrackers } from '../lib/trackerOrder.ts'
 import type { Event, Profile, Tracker } from '../types.ts'
 
 interface Conflict {
@@ -71,6 +73,16 @@ export function Home({
   }, [trackersQuery.data])
 
   const runningTrackerIds = useMemo(() => new Set(running.map((e) => e.trackerId)), [running])
+
+  /**
+   * Long-press a tile to pick it up and drop it anywhere in the grid. This is
+   * the same `sortOrder` the Trackers screen reorders, so the two views can
+   * never disagree — and a plain tap is untouched by it, which is the only way
+   * "one tap to log" survives having a second gesture on the same target.
+   */
+  const reorderTrackers = useReorderTrackers(profileId)
+  const trackerIds = useMemo(() => trackers.map((t) => t.id), [trackers])
+  const grid = useGridReorder(trackerIds, reorderTrackers)
 
   const dismissToast = useCallback(() => setToast(null), [])
 
@@ -237,7 +249,7 @@ export function Home({
                 key={event.id}
                 event={event}
                 tracker={trackerById.get(event.trackerId)}
-                pending={isOptimistic(event)}
+                pending={isPending(event.id)}
                 onStop={() => onStop(event.id)}
               />
             ))}
@@ -282,14 +294,21 @@ export function Home({
             </Link>
           </div>
         ) : (
-          <section aria-label="Trackers" className="grid grid-cols-2 gap-3">
-            {trackers.map((tracker) => (
-              <TrackerTile
-                key={tracker.id}
-                tracker={tracker}
-                running={runningTrackerIds.has(tracker.id)}
-                onTap={() => onTapTracker(tracker)}
-              />
+          <section
+            ref={grid.containerRef}
+            aria-label="Trackers"
+            className="grid grid-cols-2 gap-3"
+          >
+            {trackers.map((tracker, index) => (
+              // The wrapper is what gets dragged; `grid` makes it stretch the
+              // tile to the cell so a row stays level while a neighbour moves.
+              <div key={tracker.id} className="grid" {...grid.itemProps(index)}>
+                <TrackerTile
+                  tracker={tracker}
+                  running={runningTrackerIds.has(tracker.id)}
+                  onTap={() => onTapTracker(tracker)}
+                />
+              </div>
             ))}
           </section>
         )}

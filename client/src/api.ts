@@ -194,8 +194,16 @@ export function listRunning(profileId: string): Promise<Event[]> {
   return request(`/events/running${query({ profileId })}`)
 }
 
-/** Logs a Moment, or starts a Span. Throws `AlreadyRunningError` on 409. */
+/**
+ * Logs a Moment, or starts a Span. Throws `AlreadyRunningError` on 409.
+ *
+ * `id` is optional and minted by the client (UUIDv7). Sending it is what makes
+ * the outbox's retries safe: a dropped response looks exactly like a dropped
+ * request, so the same write is sent again with the same id and the server
+ * answers 200 with the row it already has instead of logging a second event.
+ */
 export function createEvent(input: {
+  id?: string
   trackerId: string
   startAt?: number
   values?: Record<string, string | number | boolean>

@@ -22,6 +22,15 @@ export function RunningCard({
   event: Event
   tracker: Tracker | undefined
   onStop: () => void
+  /**
+   * Still only on this device — queued in the outbox, not yet on the Pi.
+   *
+   * Purely a visual hint. It deliberately does NOT disable Stop: the event's id
+   * is minted at tap time and is the id the server will store, so a stop queues
+   * straight behind its own create and the two replay in order. Disabling would
+   * mean a feed you can start at 3am with no signal but cannot finish, which is
+   * worse than not being able to start it at all.
+   */
   pending: boolean
 }) {
   const elapsed = useElapsed(event.startAt)
@@ -54,6 +63,7 @@ export function RunningCard({
               Running
             </span>
             <span className="stencil">since {formatClock(event.startAt)}</span>
+            {pending ? <span className="stencil text-lavender">· on this phone</span> : null}
           </div>
 
           <h2 className="mt-2 truncate text-[21px] leading-tight font-semibold tracking-[-0.02em]">
@@ -73,7 +83,6 @@ export function RunningCard({
         <button
           type="button"
           onClick={onStop}
-          disabled={pending}
           aria-label={`Stop ${name}`}
           className="tap flex size-[84px] shrink-0 flex-col items-center justify-center gap-1.5 self-center rounded-2xl border border-ember/35 bg-ember/12 text-ember disabled:opacity-45"
         >
