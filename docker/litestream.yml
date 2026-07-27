@@ -1,0 +1,19 @@
+addr: ":9090"
+dbs:
+  - path: /app/data/tickit.db
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_REPLICA_BUCKET}
+        path: ${LITESTREAM_REPLICA_PATH:-db}
+        endpoint: ${LITESTREAM_REPLICA_ENDPOINT}
+        region: ${LITESTREAM_REPLICA_REGION:-auto}
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        force-path-style: true
+        snapshot-interval: 1h
+        # 30 days, not the 24h used for savethisread. This database is tiny
+        # (a few thousand rows a year) so the storage cost of a long window is
+        # negligible, and the history *is* the product — there is no export and
+        # no soft delete, so point-in-time recovery is the only way back from a
+        # mis-tapped cascading delete noticed a week later.
+        retention: 720h

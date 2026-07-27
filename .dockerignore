@@ -1,0 +1,20 @@
+# Host node_modules must NEVER enter the image: better-sqlite3 is a native
+# module and a binding compiled on the Mac will not load on the Pi.
+node_modules
+**/node_modules
+
+dist
+**/dist
+
+.git
+.env
+.env.*
+data
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+*.log
+README.md
+PLAN.md
+CONTRACT.md

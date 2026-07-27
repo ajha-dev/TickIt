@@ -1,0 +1,26 @@
+# Development compose — builds the image locally, no Litestream.
+#
+#   docker-compose up -d --build
+#
+# LITESTREAM_REPLICA_BUCKET is deliberately unset here, so the entrypoint skips
+# restore/replicate entirely and runs the server directly against a local
+# throwaway volume.
+services:
+  tickit:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: tickit-dev
+    ports:
+      - "3002:3002"
+    volumes:
+      - tickit-data:/app/data
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3002
+      - DATABASE_PATH=/app/data/tickit.db
+      - NODE_ENV=production
+    restart: unless-stopped
+
+volumes:
+  tickit-data:

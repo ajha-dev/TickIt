@@ -1,0 +1,54 @@
+# Production compose — published image, Cloudflare R2, secrets via 1Password.
+#
+# Usage (on the Pi):
+#   op run --env-file=.env.prod -- docker-compose -f docker-compose.prod.yml up -d
+#
+# THE DATABASE LIVES ON THE ATTACHED USB SSD, NOT THE SD CARD.
+# Pi SD cards fail completely rather than gracefully, and they wear out under
+# SQLite's write pattern. `/app/data` is therefore a BIND MOUNT to a host path
+# on the SSD — not a named Docker volume (those land in /var/lib/docker on the
+# SD card). Set DATA_DIR in .env.prod; it defaults to /mnt/ssd/tickit.
+#
+#   mkdir -p /mnt/ssd/tickit && chown 1001:1001 /mnt/ssd/tickit
+#
+# (uid/gid 1001 is the non-root `tickit` user inside the image.)
+
+services:
+  tickit:
+    image: ajha2025/tickit:latest
+    container_name: tickit
+    ports:
+      - "${PORT:-3002}:3002"
+      # Litestream metrics. Host port 9091 because savethisread already owns
+      # 127.0.0.1:9090 on this Pi. Container-side stays 9090.
+      - "127.0.0.1:9091:9090"
+    volumes:
+      - ${DATA_DIR:-/mnt/ssd/tickit}:/app/data
+    environment:
+      # Server
+      - HOST=0.0.0.0
+      - PORT=3002
+      - NODE_ENV=production
+
+      # Database (on the SSD via the bind mount above)
+      - DATABASE_PATH=/app/data/tickit.db
+
+      # Litestream DB replication to R2 (optional — leave blank to disable)
+      - LITESTREAM_REPLICA_BUCKET=${LITESTREAM_REPLICA_BUCKET:-}
+      - LITESTREAM_REPLICA_PATH=${LITESTREAM_REPLICA_PATH:-tickit}
+      - LITESTREAM_REPLICA_ENDPOINT=${LITESTREAM_REPLICA_ENDPOINT:-}
+      - LITESTREAM_REPLICA_REGION=${LITESTREAM_REPLICA_REGION:-auto}
+      - LITESTREAM_ACCESS_KEY_ID=${LITESTREAM_ACCESS_KEY_ID:-}
+      - LITESTREAM_SECRET_ACCESS_KEY=${LITESTREAM_SECRET_ACCESS_KEY:-}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
