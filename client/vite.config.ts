@@ -32,6 +32,9 @@ export default defineConfig({
         background_color: '#08090d',
         theme_color: '#08090d',
         icons: [
+          // The vector first, so anything that can scale it does — the mark is
+          // geometry, and a 512px raster is a fallback, not the original.
+          { src: '/icons/icon.svg', sizes: 'any', type: 'image/svg+xml' },
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
           {

@@ -1,7 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <rect width="512" height="512" fill="#08090D"/>
-  <circle cx="256" cy="256" r="150" fill="none" stroke="#8E94F2" stroke-opacity="0.42" stroke-width="20"/>
-  <circle cx="256" cy="256" r="150" fill="none" stroke="#8E94F2" stroke-width="20"
-          stroke-linecap="round" stroke-dasharray="236 707" transform="rotate(-90 256 256)"/>
-  <circle cx="256" cy="256" r="62" fill="#8E94F2"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="TickIt">
+  <!--
+    The app's two primitives, drawn as themselves: a Span (the capsule) and a
+    Moment (the dot), sitting on the timeline rail they sit on in the Timeline
+    screen. Nothing here is decoration — it is the data model at 16px.
+
+    Colours are the brand palette from THEME.md: periwinkle for the span,
+    orchid for the moment, on the near-black app surface.
+  -->
+  <rect width="512" height="512" rx="112" fill="#08090D"/>
+
+  <!-- The rail. Faint: it is the thing the marks hang on, not a mark itself. -->
+  <path d="M256 104V408" stroke="#8E94F2" stroke-opacity="0.28" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- Span: a run of time, with length. -->
+  <rect x="222" y="128" width="68" height="150" rx="34" fill="#8E94F2"/>
+
+  <!-- Moment: one instant, no duration. -->
+  <circle cx="256" cy="356" r="40" fill="#DAB6FC"/>
 </svg>
