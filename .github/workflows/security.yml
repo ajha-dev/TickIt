@@ -1,0 +1,211 @@
+name: Security
+
+# Separate from ci.yml on purpose. ci.yml gates the deploy — if it is red,
+# nothing ships. This one is allowed to be red without blocking a deploy, and
+# it runs on a schedule as well as on changes, because a dependency advisory
+# published on a Tuesday does not arrive attached to a commit.
+#
+# Like ci.yml, this uses no secret beyond the automatic GITHUB_TOKEN. Nothing
+# here requires an account, a licence key, or a paid tier.
+#
+# Third-party actions are pinned to a commit SHA rather than a tag. A tag is
+# mutable: whoever controls the repository can repoint `@v4` at new code, which
+# is arbitrary code execution inside this workflow. The `# vX.Y.Z` comment is
+# for humans; the SHA is what runs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 04:17 UTC. Off the hour so it is not queued behind everyone
+    # else's midnight cron.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+# Default to nothing. Each job opts into exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------- secrets --
+  # The one that matters for a repo being opened up: a secret committed once is
+  # in the history forever, and a scan of the working tree would not see it.
+  #
+  # The gitleaks *binary* rather than gitleaks/gitleaks-action. The action ships
+  # under a commercial EULA and demands a GITLEAKS_LICENSE secret the moment a
+  # repo is owned by an organisation rather than a user — free to obtain, but it
+  # is a registration and a stored secret, and moving this repo under an org
+  # would silently break the scan. The binary is MIT, needs neither, and the
+  # checksum below means a tampered release asset fails loudly instead of
+  # becoming code execution in CI.
+  gitleaks:
+    name: Secret scan (full history)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # SARIF upload, so findings land in the Security tab with per-finding
+      # dismissal instead of only in a log nobody reads.
+      security-events: write
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The whole point. The default depth of 1 scans one commit.
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          asset="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o "$asset" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${asset}"
+          echo "${GITLEAKS_SHA256}  ${asset}" | sha256sum -c -
+          tar -xzf "$asset" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # `--log-opts="--all --full-history"` is what makes this a history scan:
+      # every commit on every ref, including blobs whose files were later
+      # deleted. Without it gitleaks defaults to the current branch only.
+      - name: Scan all commits on all refs
+        id: scan
+        run: |
+          gitleaks git . \
+            --no-banner \
+            --redact=80 \
+            --log-opts="--all --full-history" \
+            --report-format sarif \
+            --report-path gitleaks.sarif \
+            --exit-code 1
+
+      # Upload even when the scan failed, so the findings are readable.
+      - name: Upload SARIF
+        if: always() && hashFiles('gitleaks.sarif') != ''
+        uses: github/codeql-action/upload-sarif@c54b30b7df092240050e69945842bc67aee0f0f4 # v4.37.3
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+  # ----------------------------------------------------------------- codeql --
+  # Static analysis of the actual application code. The interesting surface
+  # here is the server: there is deliberately no authentication (the tailnet is
+  # the boundary, documented in README.md), so every route is reachable by
+  # anything on the tailnet and injection or path-traversal bugs are the whole
+  # threat model.
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      # Required for CodeQL to attribute alerts on pull requests.
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@c54b30b7df092240050e69945842bc67aee0f0f4 # v4.37.3
+        with:
+          languages: javascript-typescript
+          # No compilation step needed for JS/TS.
+          build-mode: none
+          # security-extended over the default: this is a personal project with
+          # no other reviewer, and the extra query pack costs only CI minutes.
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@c54b30b7df092240050e69945842bc67aee0f0f4 # v4.37.3
+        with:
+          category: /language:javascript-typescript
+
+  # ------------------------------------------------------- dependency review --
+  # PR-only by definition: it diffs the lockfile between base and head and
+  # objects to *newly introduced* vulnerable or badly-licensed packages. This
+  # one does block, and should — refusing to add a new high-severity dependency
+  # is cheap, whereas the existing tree is a separate problem (see npm-audit).
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      # Only so the action can post its summary onto the PR.
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # Fail on a newly added high or critical. Moderates are reported in
+          # the summary but do not stand between a fix and the Pi.
+          fail-on-severity: high
+          # Copyleft on a self-hosted personal app is not a legal problem, but
+          # knowing it was pulled in is worth a line in the summary.
+          comment-summary-in-pr: on-failure
+          warn-only: false
+
+  # -------------------------------------------------------------- npm audit --
+  # NON-BLOCKING, deliberately.
+  #
+  # `npm audit` scores the whole dependency tree, including devDependencies
+  # that never enter the published image — vite, drizzle-kit, esbuild. As of
+  # writing this repo has 15 advisories, of which the high ones are almost all
+  # dev-only transitives (esbuild's dev server, workbox-build -> ejs). Making
+  # them block means an afternoon's fix cannot be deployed because of a
+  # build-tool advisory that is not reachable in production. That is a worse
+  # outcome than a report nobody acted on this week.
+  #
+  # So: always run, always report into the job summary, never fail the job. The
+  # thing that *does* block is dependency-review above, which stops the tree
+  # getting worse. Genuine runtime advisories (e.g. drizzle-orm) still surface
+  # here and in Dependabot, which is free and should be enabled on the repo.
+  npm-audit:
+    name: npm audit (report only)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      # --ignore-scripts: an audit must never execute a dependency's install
+      # hooks. Nothing here needs to run, only to be resolved.
+      - name: Install (no scripts)
+        run: npm ci --ignore-scripts
+
+      - name: Audit
+        id: audit
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm audit --audit-level=high 2>&1 | tee audit.txt
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### npm audit (informational — does not block)"
+            echo
+            if [ "${{ steps.audit.outcome }}" = "success" ]; then
+              echo "No advisories at high or above."
+            else
+              echo "Advisories at high or above are present. Fix when a"
+              echo "non-breaking upgrade exists; do not let this stop a deploy."
+              echo
+              echo '```'
+              cat audit.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
