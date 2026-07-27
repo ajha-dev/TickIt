@@ -74,6 +74,35 @@ just docker-down
 The dev compose leaves `LITESTREAM_REPLICA_BUCKET` unset, so the container
 skips restore and replication and writes to a throwaway named volume.
 
+## CI/CD
+
+`.github/workflows/ci.yml`, mirroring the savethisread pipeline that already
+ships to this Pi.
+
+On every push and PR: typecheck both workspaces, run the reminder-rule
+assertions, build both workspaces. On `main` and `v*` tags it then builds
+`linux/amd64` and `linux/arm64` **each on its own native runner** and joins them
+into one multi-arch manifest on Docker Hub.
+
+Native runners, not QEMU, because `better-sqlite3` is a native module —
+cross-building it under emulation is slow and is precisely the step that fails
+quietly. The reminder rules gate the build for a specific reason: getting
+"once per idle period" wrong means a notification every 60 seconds, forever.
+
+Repo settings needed:
+
+| | |
+|---|---|
+| Environment | `docker-private` |
+| Secret | `DOCKERHUB_USERNAME` |
+| Secret | `DOCKERHUB_TOKEN` (a Docker Hub access token, not the password) |
+
+**Deployment is not automatic**, matching savethisread. CI publishes the image;
+the Pi pulls it when you say so. Automating the last hop would mean either a
+self-hosted runner on the Pi or a tailnet-authenticated SSH step in the
+workflow, and neither should be added silently to a box that already serves
+another app.
+
 ## Deploying to the Pi
 
 The Pi is ARM64 and your laptop probably is not, so build for the target:

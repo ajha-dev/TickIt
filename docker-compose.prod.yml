@@ -33,6 +33,18 @@ services:
       # Database (on the SSD via the bind mount above)
       - DATABASE_PATH=/app/data/tickit.db
 
+      # Reminders / Web Push (optional — leave blank to disable).
+      # Without these the server boots normally, logs one line saying reminders
+      # are disabled, and GET /api/push/key returns 503, which the client
+      # handles with its own copy. Reminders can still be created; they never
+      # fire. Generate a pair with: npm run vapid:generate --workspace=server
+      #
+      # Delivery also needs real HTTPS — `tailscale cert` on the ts.net
+      # hostname. Web Push will not work over http:// on a LAN address.
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:tickit@localhost}
+
       # Litestream DB replication to R2 (optional — leave blank to disable)
       - LITESTREAM_REPLICA_BUCKET=${LITESTREAM_REPLICA_BUCKET:-}
       - LITESTREAM_REPLICA_PATH=${LITESTREAM_REPLICA_PATH:-tickit}
