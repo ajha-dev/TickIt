@@ -1,7 +1,7 @@
 import { asc, count, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { db } from '../db/client.js'
-import { events, profiles, trackers } from '../db/schema.js'
+import { events, profiles, trackers, type FieldDef } from '../db/schema.js'
 import { newId } from '../lib/ids.js'
 import { DEFAULT_COLOUR, DEFAULT_ICON, readJson } from '../lib/http.js'
 import {
@@ -9,9 +9,36 @@ import {
   listTrackersQuerySchema,
   patchTrackerSchema,
   zodMessage,
+  type FieldDefInput,
 } from '../lib/validate.js'
 
 export const trackerRoutes = new Hono()
+
+/**
+ * Turn validated field input into stored `FieldDef`s.
+ *
+ * A submitted field that carries the id of an existing field is an *edit of
+ * that field*, so it keeps its id: values already logged under that id stay
+ * attached. Ids are never regenerated on edit. A field with no id (or an id the
+ * tracker has never had) is new and gets a fresh server-assigned uuidv7.
+ *
+ * Fields missing from the submitted list are dropped from the definition —
+ * without touching any logged event. See `Deleting a field` in the contract.
+ */
+function resolveFields(input: FieldDefInput[], existing: FieldDef[]): FieldDef[] {
+  const existingIds = new Set(existing.map((f) => f.id))
+  return input.map((f) => {
+    const def: FieldDef = {
+      id: f.id !== undefined && existingIds.has(f.id) ? f.id : newId(),
+      label: f.label,
+      kind: f.kind,
+    }
+    if (f.unit !== undefined) def.unit = f.unit
+    if (f.options !== undefined) def.options = f.options
+    if (f.defaultValue !== undefined) def.defaultValue = f.defaultValue
+    return def
+  })
+}
 
 trackerRoutes.get('/trackers', (c) => {
   const parsed = listTrackersQuerySchema.safeParse(c.req.query())
@@ -46,7 +73,7 @@ trackerRoutes.post('/trackers', async (c) => {
     colour: parsed.data.colour ?? DEFAULT_COLOUR,
     icon: parsed.data.icon ?? DEFAULT_ICON,
     sortOrder: 0,
-    fields: [],
+    fields: resolveFields(parsed.data.fields ?? [], []),
     archivedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -70,6 +97,7 @@ trackerRoutes.patch('/trackers/:id', async (c) => {
   if ('icon' in p) patch.icon = p.icon
   if ('sortOrder' in p) patch.sortOrder = p.sortOrder
   if ('archivedAt' in p) patch.archivedAt = p.archivedAt
+  if (p.fields !== undefined) patch.fields = resolveFields(p.fields, existing.fields)
 
   db.update(trackers).set(patch).where(eq(trackers.id, id)).run()
   const row = db.select().from(trackers).where(eq(trackers.id, id)).get()

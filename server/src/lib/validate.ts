@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { FieldDef } from '../db/schema.js'
 
 /** UTC epoch milliseconds. The server never parses or formats a date. */
 const epochMs = z.number().int().finite()
@@ -25,6 +26,110 @@ export const patchProfileSchema = z.object({
   archivedAt: epochMs.nullable().optional(),
 })
 
+/* -------------------------------------------------------------------- fields */
+
+export const MAX_FIELDS = 6
+
+export const fieldKindSchema = z.enum(['CHOICE', 'NUMBER', 'BOOL', 'TEXT'])
+
+/**
+ * One field definition as it arrives from the client. `id` is optional — the
+ * server assigns a uuidv7 when it is absent. When it is present and matches an
+ * existing field on the tracker, that field is updated in place and keeps its
+ * id, so values already logged against it stay attached.
+ */
+const fieldDefInputSchema = z
+  .object({
+    id: z.string().min(1).max(64).optional(),
+    label: z.string().min(1, 'BAD_FIELD_LABEL').max(24, 'BAD_FIELD_LABEL'),
+    kind: fieldKindSchema,
+    unit: z.string().min(1).max(8, 'UNIT_NOT_ALLOWED').optional(),
+    options: z.array(z.string()).optional(),
+    defaultValue: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  })
+  .strict()
+  .superRefine((f, ctx) => {
+    const fail = (message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, message })
+
+    if (f.kind === 'CHOICE') {
+      if (!f.options || f.options.length === 0) return fail('OPTIONS_REQUIRED')
+      if (f.options.length < 2 || f.options.length > 6) return fail('OPTIONS_REQUIRED')
+      if (f.options.some((o) => o.length < 1 || o.length > 16)) return fail('OPTIONS_REQUIRED')
+    } else if (f.options !== undefined) {
+      return fail('OPTIONS_NOT_ALLOWED')
+    }
+
+    // `unit` only means something on a number. Carrying it on a BOOL or a
+    // CHOICE would be a definition the client could never render.
+    if (f.unit !== undefined && f.kind !== 'NUMBER') return fail('UNIT_NOT_ALLOWED')
+
+    if (f.defaultValue !== undefined && !valueMatchesKind(f, f.defaultValue)) {
+      return fail('BAD_DEFAULT_VALUE')
+    }
+  })
+
+export const fieldsSchema = z
+  .array(fieldDefInputSchema)
+  .max(MAX_FIELDS, 'TOO_MANY_FIELDS')
+  .superRefine((list, ctx) => {
+    const fail = (message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, message })
+
+    const labels = new Set<string>()
+    for (const f of list) {
+      const key = f.label.trim().toLowerCase()
+      if (labels.has(key)) return fail('DUPLICATE_FIELD_LABEL')
+      labels.add(key)
+    }
+
+    const ids = new Set<string>()
+    for (const f of list) {
+      if (f.id === undefined) continue
+      if (ids.has(f.id)) return fail('DUPLICATE_FIELD_ID')
+      ids.add(f.id)
+    }
+  })
+
+export type FieldDefInput = z.infer<typeof fieldsSchema>[number]
+
+/** Does `value` typecheck against the kind of `field`? */
+export function valueMatchesKind(
+  field: { kind: FieldDef['kind']; options?: string[] },
+  value: unknown,
+): boolean {
+  switch (field.kind) {
+    case 'NUMBER':
+      return typeof value === 'number' && Number.isFinite(value)
+    case 'BOOL':
+      return typeof value === 'boolean'
+    case 'TEXT':
+      return typeof value === 'string'
+    case 'CHOICE':
+      return typeof value === 'string' && (field.options ?? []).includes(value)
+  }
+}
+
+/**
+ * Validate `Event.values` against a tracker's current fields.
+ *
+ * Every field is optional — `{}` is valid for every tracker, always. Nothing is
+ * ever required at log time; the server must not undermine that.
+ *
+ * Returns an error code, or `null` when the values are acceptable.
+ */
+export function validateEventValues(
+  fields: FieldDef[],
+  values: Record<string, string | number | boolean> | undefined,
+): 'UNKNOWN_FIELD' | 'BAD_FIELD_VALUE' | null {
+  if (!values) return null
+  const byId = new Map(fields.map((f) => [f.id, f]))
+  for (const [fieldId, value] of Object.entries(values)) {
+    const field = byId.get(fieldId)
+    if (!field) return 'UNKNOWN_FIELD'
+    if (!valueMatchesKind(field, value)) return 'BAD_FIELD_VALUE'
+  }
+  return null
+}
+
 /* ------------------------------------------------------------------ trackers */
 
 export const listTrackersQuerySchema = z.object({
@@ -37,6 +142,7 @@ export const createTrackerSchema = z.object({
   type: trackerTypeSchema,
   colour: z.string().min(1).max(64).optional(),
   icon: z.string().min(1).max(64).optional(),
+  fields: fieldsSchema.optional(),
 })
 
 export const patchTrackerSchema = z.object({
@@ -45,6 +151,7 @@ export const patchTrackerSchema = z.object({
   icon: z.string().min(1).max(64).optional(),
   sortOrder: z.number().int().optional(),
   archivedAt: epochMs.nullable().optional(),
+  fields: fieldsSchema.optional(),
 })
 
 /* -------------------------------------------------------------------- events */
@@ -87,6 +194,10 @@ export const patchEventSchema = z.object({
 export function zodMessage(error: z.ZodError): string {
   const first = error.issues[0]
   if (!first) return 'INVALID_BODY'
+  // A message that is already an error code is the contract's own vocabulary —
+  // return it bare so clients can switch on it, rather than burying it behind
+  // a path prefix.
+  if (/^[A-Z][A-Z0-9_]*$/.test(first.message)) return first.message
   const path = first.path.join('.')
   return path ? `${path}: ${first.message}` : first.message
 }

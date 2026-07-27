@@ -10,6 +10,7 @@ import {
   patchEventSchema,
   runningEventsQuerySchema,
   stopEventSchema,
+  validateEventValues,
   zodMessage,
 } from '../lib/validate.js'
 
@@ -65,11 +66,17 @@ eventRoutes.post('/events', async (c) => {
     | { kind: 'created'; row: EventRow }
     | { kind: 'no-tracker' }
     | { kind: 'already-running'; eventId: string }
+    | { kind: 'bad-values'; error: string }
 
   // The running check and the insert must not straddle a write from elsewhere.
   const create = sqlite.transaction((): Outcome => {
     const tracker = db.select().from(trackers).where(eq(trackers.id, trackerId)).get()
     if (!tracker) return { kind: 'no-tracker' }
+
+    // Values are checked against the tracker's *current* fields. `{}` and an
+    // omitted `values` are always valid — no field is ever required at log time.
+    const valuesError = validateEventValues(tracker.fields, values)
+    if (valuesError) return { kind: 'bad-values', error: valuesError }
 
     if (tracker.type === 'INTERVAL') {
       const running = db
@@ -99,6 +106,7 @@ eventRoutes.post('/events', async (c) => {
 
   const result = create()
   if (result.kind === 'no-tracker') return c.json({ error: 'TRACKER_NOT_FOUND' }, 404)
+  if (result.kind === 'bad-values') return c.json({ error: result.error }, 400)
   if (result.kind === 'already-running') {
     return c.json({ error: 'ALREADY_RUNNING', eventId: result.eventId }, 409)
   }
@@ -146,6 +154,15 @@ eventRoutes.patch('/events/:id', async (c) => {
   // INSTANT — the denormalised `type` and the data would disagree forever.
   if (existing.type === 'INSTANT' && nextEndAt !== null) {
     return c.json({ error: 'NOT_AN_INTERVAL' }, 400)
+  }
+
+  if (p.values !== undefined) {
+    // Validated against the tracker this event already belongs to, and against
+    // that tracker's current fields — an edit is held to today's definition.
+    const tracker = db.select().from(trackers).where(eq(trackers.id, existing.trackerId)).get()
+    if (!tracker) return c.json({ error: 'TRACKER_NOT_FOUND' }, 404)
+    const valuesError = validateEventValues(tracker.fields, p.values)
+    if (valuesError) return c.json({ error: valuesError }, 400)
   }
 
   const patch: Partial<EventRow> = { updatedAt: Date.now() }
