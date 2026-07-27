@@ -190,6 +190,113 @@ export const patchEventSchema = z.object({
   note: z.string().max(4000).nullable().optional(),
 })
 
+/* ----------------------------------------------------------------- reminders */
+
+/** Contract: `afterMs` is bounded to 5 minutes … 48 hours. */
+export const MIN_AFTER_MS = 5 * 60_000
+export const MAX_AFTER_MS = 48 * 60 * 60_000
+
+const MINUTES_PER_DAY = 1440
+
+const afterMsSchema = z
+  .number()
+  .int()
+  .min(MIN_AFTER_MS, 'AFTER_MS_OUT_OF_RANGE')
+  .max(MAX_AFTER_MS, 'AFTER_MS_OUT_OF_RANGE')
+
+/** Minutes past local midnight. 0 … 1439. */
+const quietMinSchema = z
+  .number()
+  .int()
+  .min(0, 'BAD_QUIET_HOURS')
+  .max(MINUTES_PER_DAY - 1, 'BAD_QUIET_HOURS')
+  .nullable()
+
+/**
+ * Is `zone` a real IANA time zone name?
+ *
+ * `Intl.supportedValuesOf` is the cheap exact answer where it exists; the
+ * `DateTimeFormat` construction is the fallback, and it throws a RangeError for
+ * anything the runtime does not recognise. Both reject "UTC+5" style offsets,
+ * which is what we want: the sweep needs a zone with DST rules, not an offset.
+ */
+export function isValidTimeZone(zone: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone })
+    return true
+  } catch {
+    return false
+  }
+}
+
+const timeZoneSchema = z.string().min(1).max(64).refine(isValidTimeZone, 'BAD_TIME_ZONE')
+
+/**
+ * Quiet hours are all-or-nothing: a window needs both ends. A single endpoint
+ * describes no window at all, and silently ignoring the half that was sent
+ * would leave the user believing they had configured quiet hours.
+ *
+ * `from === to` is rejected too — it is unreadable as either an empty window or
+ * a whole day, and the user meant one of them.
+ */
+function refineQuietHours(
+  value: { quietFromMin?: number | null; quietToMin?: number | null },
+  ctx: z.RefinementCtx,
+): void {
+  const from = value.quietFromMin ?? null
+  const to = value.quietToMin ?? null
+  if ((from === null) !== (to === null)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'QUIET_HOURS_INCOMPLETE' })
+    return
+  }
+  if (from !== null && to !== null && from === to) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'BAD_QUIET_HOURS' })
+  }
+}
+
+export const listRemindersQuerySchema = z.object({
+  profileId: z.string().min(1),
+})
+
+export const createReminderSchema = z
+  .object({
+    trackerId: z.string().min(1),
+    afterMs: afterMsSchema,
+    quietFromMin: quietMinSchema.optional(),
+    quietToMin: quietMinSchema.optional(),
+    timeZone: timeZoneSchema,
+  })
+  .strict()
+  .superRefine(refineQuietHours)
+
+export const patchReminderSchema = z
+  .object({
+    afterMs: afterMsSchema.optional(),
+    quietFromMin: quietMinSchema.optional(),
+    quietToMin: quietMinSchema.optional(),
+    timeZone: timeZoneSchema.optional(),
+    enabled: z.boolean().optional(),
+  })
+  .strict()
+
+/* --------------------------------------------------------------------- push */
+
+export const subscribePushSchema = z
+  .object({
+    endpoint: z.string().url('BAD_ENDPOINT').max(2000),
+    keys: z.object({
+      p256dh: z.string().min(1).max(400),
+      auth: z.string().min(1).max(400),
+    }),
+  })
+  .strict()
+
+export const unsubscribePushSchema = z
+  .object({
+    endpoint: z.string().min(1).max(2000),
+  })
+  .strict()
+
 /** Turn a ZodError into the contract's flat `{ error }` message. */
 export function zodMessage(error: z.ZodError): string {
   const first = error.issues[0]

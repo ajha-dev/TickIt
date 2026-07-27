@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 export type TrackerType = 'INSTANT' | 'INTERVAL'
 export type FieldKind = 'CHOICE' | 'NUMBER' | 'BOOL' | 'TEXT'
@@ -77,6 +77,65 @@ export const events = sqliteTable(
   ],
 )
 
+/**
+ * An idle reminder: "nothing logged on this tracker for `afterMs`".
+ *
+ * `timeZone` is the one place the server stores a wall-clock concept. It exists
+ * only so the sweep can evaluate the quiet window in the user's local time;
+ * everything else in this schema is UTC epoch millis and stays that way.
+ */
+export const reminders = sqliteTable(
+  'reminders',
+  {
+    id: text('id').primaryKey(),
+    // One tracker, one reminder — enforced in the database, not just the route.
+    trackerId: text('tracker_id')
+      .notNull()
+      .references(() => trackers.id, { onDelete: 'cascade' }),
+    profileId: text('profile_id')
+      .notNull()
+      .references(() => profiles.id, { onDelete: 'cascade' }),
+    afterMs: integer('after_ms').notNull(),
+    /** Minutes past LOCAL midnight, or null for "no quiet hours". */
+    quietFromMin: integer('quiet_from_min'),
+    /** Minutes past local midnight; may be less than `quietFromMin` (wraps). */
+    quietToMin: integer('quiet_to_min'),
+    /** IANA name, e.g. "Asia/Kolkata". */
+    timeZone: text('time_zone').notNull(),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    /**
+     * When this reminder last consumed an idle period. The sweep skips while
+     * `lastFiredAt >= anchor`, which is what makes it fire once per idle period
+     * instead of once every 60 seconds.
+     */
+    lastFiredAt: integer('last_fired_at'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    uniqueIndex('reminders_tracker_idx').on(t.trackerId),
+    index('reminders_profile_idx').on(t.profileId),
+    index('reminders_enabled_idx').on(t.enabled),
+  ],
+)
+
+/** A browser's Web Push subscription. Keyed by endpoint — subscribing twice with
+ * the same endpoint refreshes the row rather than adding one. */
+export const pushSubs = sqliteTable(
+  'push_subs',
+  {
+    id: text('id').primaryKey(),
+    endpoint: text('endpoint').notNull(),
+    p256dh: text('p256dh').notNull(),
+    auth: text('auth').notNull(),
+    createdAt: integer('created_at').notNull(),
+    lastSeenAt: integer('last_seen_at').notNull(),
+  },
+  (t) => [uniqueIndex('push_subs_endpoint_idx').on(t.endpoint)],
+)
+
 export type ProfileRow = typeof profiles.$inferSelect
 export type TrackerRow = typeof trackers.$inferSelect
 export type EventRow = typeof events.$inferSelect
+export type ReminderRow = typeof reminders.$inferSelect
+export type PushSubRow = typeof pushSubs.$inferSelect

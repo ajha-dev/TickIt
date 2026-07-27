@@ -10,7 +10,10 @@ import { seed } from './db/seed.js'
 import { eventRoutes } from './routes/events.js'
 import { healthRoutes } from './routes/health.js'
 import { profileRoutes } from './routes/profiles.js'
+import { pushRoutes } from './routes/push.js'
+import { reminderRoutes } from './routes/reminders.js'
 import { trackerRoutes } from './routes/trackers.js'
+import { startSweep } from './reminders/sweep.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -30,6 +33,8 @@ api.route('/', healthRoutes)
 api.route('/', profileRoutes)
 api.route('/', trackerRoutes)
 api.route('/', eventRoutes)
+api.route('/', reminderRoutes)
+api.route('/', pushRoutes)
 
 app.route('/api', api)
 
@@ -62,4 +67,14 @@ serve({ fetch: app.fetch, port, hostname }, (info) => {
   console.log(`[tickit] listening on http://${hostname}:${info.port}`)
   console.log(`[tickit] database ${databasePath}`)
   console.log(`[tickit] client dist ${clientDist}${existsSync(clientDist) ? '' : ' (missing)'}`)
+
+  // Reminders are optional. Missing VAPID keys disable them and nothing else —
+  // the app must never fail to start because a nice-to-have is unconfigured.
+  if (startSweep()) {
+    console.log('[tickit] reminders enabled — sweeping every 60s')
+  } else {
+    console.log(
+      '[tickit] reminders disabled — set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY to enable (npm run vapid:generate)',
+    )
+  }
 })
