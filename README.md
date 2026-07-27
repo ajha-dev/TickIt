@@ -82,20 +82,22 @@ ships to this Pi.
 On every push and PR: typecheck both workspaces, run the reminder-rule
 assertions, build both workspaces. On `main` and `v*` tags it then builds
 `linux/amd64` and `linux/arm64` **each on its own native runner** and joins them
-into one multi-arch manifest on Docker Hub.
+into one multi-arch manifest at `ghcr.io/ajha-dev/tickit`.
 
 Native runners, not QEMU, because `better-sqlite3` is a native module —
 cross-building it under emulation is slow and is precisely the step that fails
 quietly. The reminder rules gate the build for a specific reason: getting
 "once per idle period" wrong means a notification every 60 seconds, forever.
 
-Repo settings needed:
+**No registry secrets to configure.** GHCR rather than Docker Hub, so the
+workflow authenticates with the built-in `GITHUB_TOKEN` and the `packages:
+write` permission. The package inherits this repo's visibility, so it is
+private — which means the Pi has to log in once to pull it:
 
-| | |
-|---|---|
-| Environment | `docker-private` |
-| Secret | `DOCKERHUB_USERNAME` |
-| Secret | `DOCKERHUB_TOKEN` (a Docker Hub access token, not the password) |
+```sh
+# On the Pi. The PAT needs only read:packages.
+echo "$GHCR_PAT" | docker login ghcr.io -u <github-username> --password-stdin
+```
 
 **Deployment is not automatic**, matching savethisread. CI publishes the image;
 the Pi pulls it when you say so. Automating the last hop would mean either a
@@ -108,33 +110,43 @@ another app.
 The Pi is ARM64 and your laptop probably is not, so build for the target:
 
 ```sh
-just docker-publish     # buildx --platform linux/arm64, pushes ajha2025/tickit:latest
+just docker-publish     # buildx --platform linux/arm64, pushes ghcr.io/ajha-dev/tickit:latest
 ```
 
 `better-sqlite3` is a native module. Every build stage runs on the target
 architecture and `node_modules` is in `.dockerignore`, so a binding compiled on
 the Mac can never leak into the image.
 
-On the Pi:
+On the Pi, each app lives in `~/<name>/` with its own `docker-compose.yml` and
+an `.env.tpl` of 1Password references:
 
 ```sh
-# 1. Data directory on the USB SSD — NOT the SD card.
-sudo mkdir -p /mnt/ssd/tickit && sudo chown 1001:1001 /mnt/ssd/tickit   # uid of `tickit` in the image
-
-# 2. .env.prod, from .env.example, with 1Password refs for the R2 keys.
-just prod-pull
-just prod-up
-just prod-logs
+cd ~/tickit
+op run --env-file=.env.tpl -- docker compose pull
+op run --env-file=.env.tpl -- docker compose up -d
+docker compose logs -f tickit
 ```
 
-Ports and names on the shared Pi (savethisread already lives there):
+**Storage: a named volume, not a bind mount.** An earlier draft of this insisted
+the database live on `/mnt/ssd`, on the assumption of an SD-card boot with a USB
+SSD for data. rasphome is not built that way — it boots from a **238G NVMe drive
+and has no SD card at all**, so `/var/lib/docker` is already on solid state and
+a named volume is both correct and consistent with savethisread beside it. There
+is no slow, wear-prone card to protect the database from.
 
-| | savethisread | TickIt |
-|---|---|---|
-| App port | 3001 | **3002** |
-| Litestream metrics | 127.0.0.1:9090 | **127.0.0.1:9091** |
-| Container | `savethisread` | `tickit` |
-| Data | named volume | bind mount `${DATA_DIR:-/mnt/ssd/tickit}` |
+rasphome is busy. Measured, not assumed:
+
+| Port | Owner |
+|---|---|
+| 3000 | systemic-designer |
+| 3001 | savethisread |
+| **3002** | **TickIt** |
+| 4000 | markdoc |
+| 5432 | hyper-pg |
+| 8000 | manim-gpt |
+| 9090 | savethisread Litestream metrics |
+| **9091** | **TickIt Litestream metrics** |
+| 11434 | ollama |
 
 **Reach:** run Tailscale on the Pi host, not in the container. The tailnet is
 the security boundary — there is deliberately no login (see `PLAN.md`). Every

@@ -31,8 +31,9 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY: docker.io
-  IMAGE_NAME: ajha2025/tickit
+  REGISTRY: ghcr.io
+  # Must be lowercase — ghcr rejects capitals in the path.
+  IMAGE_NAME: ghcr.io/ajha-dev/tickit
 
 jobs:
   check:
@@ -87,9 +88,9 @@ jobs:
   build:
     name: Build ${{ matrix.platform }}
     needs: docker-meta
-    environment: docker-private
     permissions:
       contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -109,8 +110,10 @@ jobs:
 
       - uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          # No stored secret: GITHUB_TOKEN can push to this repo's own package.
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push by digest
         id: build
@@ -142,9 +145,9 @@ jobs:
     name: Multi-arch manifest
     runs-on: ubuntu-latest
     needs: [docker-meta, build]
-    environment: docker-private
     permissions:
       contents: read
+      packages: write
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4
@@ -157,8 +160,10 @@ jobs:
 
       - uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          # No stored secret: GITHUB_TOKEN can push to this repo's own package.
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests

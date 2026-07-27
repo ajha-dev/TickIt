@@ -27,7 +27,7 @@ docker-logs:
 
 # Build and push the ARM64 image for the Pi
 docker-publish:
-    docker buildx build --platform linux/arm64 -f docker/Dockerfile -t ajha2025/tickit:latest --push .
+    docker buildx build --platform linux/arm64 -f docker/Dockerfile -t ghcr.io/ajha-dev/tickit:latest --push .
 
 # Docker — Prod (published image, R2, 1Password secrets)
 prod-up:

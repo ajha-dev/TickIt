@@ -1,21 +1,26 @@
-# Production compose — published image, Cloudflare R2, secrets via 1Password.
+# Production compose for rasphome — published image, Cloudflare R2, secrets
+# via 1Password, matching the convention the other apps on that Pi use.
 #
-# Usage (on the Pi):
-#   op run --env-file=.env.prod -- docker-compose -f docker-compose.prod.yml up -d
+# Usage (on the Pi, from ~/tickit):
+#   op run --env-file=.env.tpl -- docker compose up -d
 #
-# THE DATABASE LIVES ON THE ATTACHED USB SSD, NOT THE SD CARD.
-# Pi SD cards fail completely rather than gracefully, and they wear out under
-# SQLite's write pattern. `/app/data` is therefore a BIND MOUNT to a host path
-# on the SSD — not a named Docker volume (those land in /var/lib/docker on the
-# SD card). Set DATA_DIR in .env.prod; it defaults to /mnt/ssd/tickit.
+# STORAGE. An earlier draft of this file bind-mounted /mnt/ssd/tickit, on the
+# assumption that the Pi booted from an SD card and had a USB SSD attached for
+# data. It does not: rasphome boots from a 238G NVMe drive and has no SD card
+# at all, so the root filesystem — and with it /var/lib/docker — is already on
+# solid state. A named volume is therefore the right choice and matches
+# savethisread beside it. There is no slow, wear-prone card to keep the
+# database off.
 #
-#   mkdir -p /mnt/ssd/tickit && chown 1001:1001 /mnt/ssd/tickit
-#
-# (uid/gid 1001 is the non-root `tickit` user inside the image.)
+# Ports on this Pi are crowded — 3000 systemic-designer, 3001 savethisread,
+# 4000 markdoc, 5432 postgres, 8000 manim-gpt, 9090 savethisread's Litestream
+# metrics, 11434 ollama. 3002 and 9091 are free, which is what this uses.
 
 services:
   tickit:
-    image: ajha2025/tickit:latest
+    # Pin to a tag for a deploy you can roll back, as savethisread does
+    # (savethisread runs a pinned tag, not :latest). TICKIT_TAG overrides it.
+    image: ghcr.io/ajha-dev/tickit:${TICKIT_TAG:-latest}
     container_name: tickit
     ports:
       - "${PORT:-3002}:3002"
@@ -23,7 +28,7 @@ services:
       # 127.0.0.1:9090 on this Pi. Container-side stays 9090.
       - "127.0.0.1:9091:9090"
     volumes:
-      - ${DATA_DIR:-/mnt/ssd/tickit}:/app/data
+      - tickit-data:/app/data
     environment:
       # Server
       - HOST=0.0.0.0
@@ -64,3 +69,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+volumes:
+  tickit-data:
