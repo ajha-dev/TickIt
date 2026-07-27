@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 
 interface SheetProps {
   open: boolean
@@ -33,7 +34,10 @@ export function Sheet({ open, onClose, eyebrow, title, body, children }: SheetPr
 
   if (!open) return null
 
-  return (
+  // Portalled to <body> deliberately: every screen root establishes its own
+  // stacking context, so a sheet rendered inside one would sit *under* the tab
+  // bar however high its z-index. A modal has to cover the navigation.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex flex-col justify-end">
       <button
         type="button"
@@ -46,28 +50,33 @@ export function Sheet({ open, onClose, eyebrow, title, body, children }: SheetPr
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="anim-rise pad-safe-x pad-safe-bottom relative w-full rounded-t-[26px] border-t border-white/10 bg-ink-900 pt-3 shadow-[0_-30px_60px_-20px_rgba(0,0,0,0.9)]"
+        className="anim-rise pad-safe-x pad-safe-bottom relative max-h-[90dvh] w-full overflow-y-auto overscroll-contain rounded-t-[26px] border-t border-ink-600 bg-ink-800 pt-3 shadow-[0_-30px_60px_-20px_rgba(0,0,0,0.9)]"
       >
-        <div className="mx-auto mb-5 h-1 w-10 rounded-full bg-white/15" />
+        <div className="mx-auto mb-5 h-1 w-10 rounded-full bg-ink-600" />
 
         {eyebrow ? <p className="stencil mb-2.5">{eyebrow}</p> : null}
         <h2 className="text-[26px] leading-[1.12] font-semibold tracking-[-0.02em] text-balance">
           {title}
         </h2>
-        {body ? <div className="mt-2.5 text-[15px] leading-snug text-bone-dim">{body}</div> : null}
+        {body ? (
+          <div className="mt-2.5 text-[15px] leading-snug text-text-dim">{body}</div>
+        ) : null}
 
         <div className="mt-7 flex flex-col gap-2.5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
 type ButtonTone = 'primary' | 'danger' | 'quiet'
 
 const TONES: Record<ButtonTone, string> = {
-  primary: 'bg-amber text-ink-950 border-transparent font-semibold',
-  danger: 'bg-ember text-ink-950 border-transparent font-semibold',
-  quiet: 'bg-ink-800 text-bone border-white/8',
+  // Soft-periwinkle is the primary accent; wisteria is its pressed state.
+  primary: 'bg-periwinkle text-ink-900 border-transparent font-semibold active:bg-wisteria',
+  // Warm, and only ever Stop or Delete.
+  danger: 'bg-ember text-ink-900 border-transparent font-semibold',
+  quiet: 'bg-ink-700 text-text border-ink-600',
 }
 
 /** Full-width, 60px tall. Sized to be hit without aiming. */

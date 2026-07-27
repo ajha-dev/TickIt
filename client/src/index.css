@@ -5,9 +5,14 @@
    TickIt — "darkroom instrument"
 
    Read in a dark room at 3am with one hand. That single constraint drives
-   everything below: near-black surfaces instead of grey cards, a warm amber
-   safelight accent instead of blue, warm off-white text instead of #fff, and
-   type large enough to read half-awake without glasses.
+   everything below: a near-black field, type large enough to read half-awake,
+   and colour used as a *signal* rather than as a surface.
+
+   The palette is periwinkle/mauve (see THEME.md). Because those pastels all sit
+   at 62–85% lightness, they are never allowed to fill an area: tiles tint their
+   background with 8–12% of a tracker colour mixed into --ink-850, and full
+   chroma is reserved for dots, rules, digits, icons and 1px borders. Warm
+   --ember is the only exception, and it means Stop or Delete — nothing else.
    ========================================================================== */
 
 @theme {
@@ -15,24 +20,26 @@
     'Familjen Grotesk', ui-sans-serif, -apple-system, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'Martian Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
-  /* Surfaces — a warm-black ramp, not a grey one. */
-  --color-ink-950: #050607;
-  --color-ink-900: #0a0b0d;
-  --color-ink-850: #101215;
-  --color-ink-800: #16191d;
-  --color-ink-700: #22262b;
-  --color-ink-600: #333940;
+  /* Surfaces — near-black, faintly cooled toward the palette's hue. */
+  --color-ink-900: #08090d;
+  --color-ink-850: #0d0f16;
+  --color-ink-800: #13161f;
+  --color-ink-700: #1c2030;
+  --color-ink-600: #2a2f44;
 
-  /* Text — warm, never pure white. */
-  --color-bone: #ece7dd;
-  --color-bone-dim: #9a958a;
-  --color-bone-faint: #5f5c55;
+  /* Text — never pure white. --text-dim is lavender-grey: 6.6:1 on ink-900. */
+  --color-text: #e6e7ef;
+  --color-text-dim: #8895b3;
 
-  /* Accents — safelight amber, ember for destructive/stop. */
-  --color-amber: #ffb020;
-  --color-amber-deep: #b87608;
-  --color-ember: #ff5a36;
-  --color-ember-deep: #8f2a13;
+  /* The supplied palette, in its UI roles. */
+  --color-lavender: #8895b3; /* muted text, dividers, inactive tabs */
+  --color-periwinkle: #8e94f2; /* primary accent */
+  --color-wisteria: #9fa0ff; /* pressed primary, live counter digits */
+  --color-mauve: #bbadff; /* secondary accent, selection, running */
+  --color-orchid: #dab6fc; /* highlight, gradient terminus */
+
+  /* Destructive stays warm — Stop and Delete only. */
+  --color-ember: #ff6b4a;
 
   --radius-tile: 20px;
 }
@@ -41,10 +48,26 @@
   :root {
     color-scheme: dark;
 
+    /* THEME.md names, available to inline styles and colour-mix(). */
+    --ink-900: var(--color-ink-900);
+    --ink-850: var(--color-ink-850);
+    --ink-800: var(--color-ink-800);
+    --ink-700: var(--color-ink-700);
+    --ink-600: var(--color-ink-600);
+    --text: var(--color-text);
+    --text-dim: var(--color-text-dim);
+    --ember: var(--color-ember);
+
     --safe-t: env(safe-area-inset-top, 0px);
     --safe-b: env(safe-area-inset-bottom, 0px);
     --safe-l: env(safe-area-inset-left, 0px);
     --safe-r: env(safe-area-inset-right, 0px);
+
+    /* The tab bar's own height, before the safe-area inset. Everything that
+       must stay out of its way measures from here. */
+    --tabbar-h: 54px;
+    /* Thumb-slip margin: no log target comes closer than this to the bar. */
+    --tabbar-clear: 30px;
   }
 
   html,
@@ -55,8 +78,8 @@
 
   body {
     margin: 0;
-    background: var(--color-ink-950);
-    color: var(--color-bone);
+    background: var(--color-ink-900);
+    color: var(--color-text);
     font-family: var(--font-display);
     font-synthesis-weight: none;
     -webkit-font-smoothing: antialiased;
@@ -65,8 +88,9 @@
     -webkit-tap-highlight-color: transparent;
   }
 
-  /* A faint warm glow rising from the thumb zone: the bottom of the screen is
-     where the app lives, so that is where the light comes from. */
+  /* A cold, very faint wash rising from the thumb zone: the bottom of the
+     screen is where the app lives, so that is where the light comes from. Kept
+     under 8% so it never becomes "a large area filled with a palette colour". */
   body::before {
     content: '';
     position: fixed;
@@ -74,8 +98,8 @@
     pointer-events: none;
     z-index: 0;
     background: radial-gradient(
-      120% 55% at 50% 118%,
-      color-mix(in oklab, var(--color-amber) 9%, transparent),
+      120% 55% at 50% 116%,
+      color-mix(in oklab, var(--color-periwinkle) 7%, transparent),
       transparent 70%
     );
   }
@@ -106,7 +130,12 @@
   }
 
   ::selection {
-    background: color-mix(in oklab, var(--color-amber) 35%, transparent);
+    background: color-mix(in oklab, var(--color-mauve) 35%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-periwinkle);
+    outline-offset: 2px;
   }
 }
 
@@ -119,11 +148,11 @@
     line-height: 1;
     letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: var(--color-bone-faint);
+    color: var(--color-text-dim);
   }
 
   .hairline {
-    border: 1px solid color-mix(in oklab, var(--color-bone) 8%, transparent);
+    border: 1px solid var(--color-ink-700);
   }
 
   /* Every tappable surface: presses in, never bounces. */
@@ -143,6 +172,14 @@
     font-variant-numeric: tabular-nums;
     font-feature-settings: 'tnum' 1;
   }
+
+  /* The supplied 135° gradient. Used at most ONCE per screen — the wordmark. */
+  .lockup {
+    background: linear-gradient(135deg, var(--color-lavender), var(--color-orchid));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
 }
 
 @layer utilities {
@@ -156,8 +193,12 @@
     padding-left: calc(var(--safe-l) + 16px);
     padding-right: calc(var(--safe-r) + 16px);
   }
-  .inset-safe-bottom {
-    bottom: calc(var(--safe-b) + 16px);
+  /* Clears the tab bar *and* the thumb-slip margin above it. */
+  .pad-tabs {
+    padding-bottom: calc(var(--safe-b) + var(--tabbar-h) + var(--tabbar-clear));
+  }
+  .inset-tabs {
+    bottom: calc(var(--safe-b) + var(--tabbar-h) + 14px);
   }
 }
 

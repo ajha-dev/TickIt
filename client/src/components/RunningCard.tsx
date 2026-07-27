@@ -1,4 +1,5 @@
-import { safeColour } from '../lib/colours.ts'
+import { ValueChips } from './ValueChips.tsx'
+import { safeColour, tintedBorder, tintedSurface } from '../lib/colours.ts'
 import { formatClock, formatStopwatch, useElapsed } from '../lib/time.ts'
 import type { Event, Tracker } from '../types.ts'
 
@@ -6,6 +7,11 @@ import type { Event, Tracker } from '../types.ts'
  * A running Span, pinned to the top of Home. The live readout is the whole
  * point of the card, so it gets the largest type in the app; the Stop button is
  * an 84px target on the right, reachable with the same thumb that started it.
+ *
+ * The digits carry full chroma — they are the one place THEME.md explicitly
+ * allows it at size, because a live counter *is* the indicator. Stop stays warm
+ * (--ember): against an entirely cool palette it is the only control a
+ * half-asleep person can find without reading it.
  */
 export function RunningCard({
   event,
@@ -24,10 +30,10 @@ export function RunningCard({
 
   return (
     <article
-      className="anim-rise relative overflow-hidden rounded-tile border bg-ink-850"
+      className="anim-rise relative overflow-hidden rounded-tile border"
       style={{
-        borderColor: `color-mix(in oklab, ${colour} 34%, transparent)`,
-        background: `linear-gradient(180deg, color-mix(in oklab, ${colour} 11%, var(--color-ink-850)), var(--color-ink-900))`,
+        borderColor: tintedBorder(colour, 32),
+        background: `linear-gradient(180deg, ${tintedSurface(colour, 12)}, var(--ink-900))`,
       }}
     >
       <span
@@ -36,7 +42,7 @@ export function RunningCard({
         style={{ background: colour, boxShadow: `0 0 22px ${colour}` }}
       />
 
-      <div className="flex items-stretch gap-3 py-4 pl-5 pr-4">
+      <div className="flex items-stretch gap-3 py-4 pr-4 pl-5">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span
@@ -60,6 +66,8 @@ export function RunningCard({
           >
             {formatStopwatch(elapsed)}
           </p>
+
+          <ValueChips fields={tracker?.fields} values={event.values} className="mt-2.5" />
         </div>
 
         <button

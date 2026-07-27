@@ -15,6 +15,14 @@ export interface FieldDef {
   defaultValue?: string | number | boolean
 }
 
+/**
+ * A field as *sent* to the server. Identical to `FieldDef` except that `id` is
+ * optional: a field without one is new, and the server mints a uuidv7 for it.
+ * A field with one is an edit in place, which is what keeps values already
+ * logged against that id attached to it.
+ */
+export type FieldDefInput = Omit<FieldDef, 'id'> & { id?: string }
+
 export interface Profile {
   id: string
   name: string

@@ -7,27 +7,79 @@ import {
 } from '@tanstack/react-query'
 
 import * as api from '../api.ts'
-import type { Event, Profile, Tracker, TrackerType } from '../types.ts'
+import type { Event, FieldDefInput, Profile, Tracker, TrackerType } from '../types.ts'
 
 export const keys = {
   profiles: ['profiles'] as const,
   trackers: (profileId: string) => ['trackers', profileId] as const,
   running: (profileId: string) => ['running', profileId] as const,
+  events: (profileId: string) => ['events', profileId] as const,
 }
 
 /* -------------------------------------------------------------- profiles -- */
 
-/**
- * Phase 1 has exactly one profile — the seeded default. We still read it from
- * the server rather than hardcoding an id, so Phase 3 only has to add a picker.
- */
-export function useDefaultProfile(): UseQueryResult<Profile | null> {
+/** Every profile, archived ones included — the client decides what to hide. */
+export function useProfiles(): UseQueryResult<Profile[]> {
   return useQuery({
     queryKey: keys.profiles,
     queryFn: api.listProfiles,
-    select: (profiles: Profile[]): Profile | null =>
-      profiles.find((p) => p.archivedAt === null) ?? profiles[0] ?? null,
     staleTime: 5 * 60_000,
+  })
+}
+
+export function useCreateProfile(): UseMutationResult<
+  Profile,
+  Error,
+  { name: string; colour?: string }
+> {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input) => api.createProfile(input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.profiles })
+    },
+  })
+}
+
+export function useUpdateProfile(): UseMutationResult<
+  Profile,
+  Error,
+  { id: string; patch: { name?: string; colour?: string; archivedAt?: number | null } }
+> {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, patch }) => api.updateProfile(id, patch),
+    onMutate: async ({ id, patch }) => {
+      await qc.cancelQueries({ queryKey: keys.profiles })
+      const previous = qc.getQueryData<Profile[]>(keys.profiles)
+      if (previous) {
+        qc.setQueryData<Profile[]>(
+          keys.profiles,
+          previous.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+        )
+      }
+      return { previous }
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(keys.profiles, ctx.previous)
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: keys.profiles })
+    },
+  })
+}
+
+/** A real delete: the profile's trackers and every event under them go with it. */
+export function useDeleteProfile(): UseMutationResult<void, Error, string> {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id) => api.deleteProfile(id),
+    onSuccess: (_data, id) => {
+      void qc.invalidateQueries({ queryKey: keys.profiles })
+      qc.removeQueries({ queryKey: keys.trackers(id) })
+      qc.removeQueries({ queryKey: keys.running(id) })
+      qc.removeQueries({ queryKey: keys.events(id) })
+    },
   })
 }
 
@@ -44,7 +96,11 @@ export function useTrackers(profileId: string | undefined): UseQueryResult<Track
 
 export function useCreateTracker(
   profileId: string,
-): UseMutationResult<Tracker, Error, { name: string; type: TrackerType; colour?: string }> {
+): UseMutationResult<
+  Tracker,
+  Error,
+  { name: string; type: TrackerType; colour?: string; fields?: FieldDefInput[] }
+> {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (input) => api.createTracker({ profileId, ...input }),
@@ -59,7 +115,15 @@ export function useUpdateTracker(
 ): UseMutationResult<
   Tracker,
   Error,
-  { id: string; patch: { name?: string; colour?: string; archivedAt?: number | null } }
+  {
+    id: string
+    patch: {
+      name?: string
+      colour?: string
+      archivedAt?: number | null
+      fields?: FieldDefInput[]
+    }
+  }
 > {
   const qc = useQueryClient()
   return useMutation({
@@ -69,9 +133,13 @@ export function useUpdateTracker(
       await qc.cancelQueries({ queryKey: key })
       const previous = qc.getQueryData<Tracker[]>(key)
       if (previous) {
+        // `fields` is deliberately left out of the optimistic merge: new fields
+        // have no id until the server mints one, and rendering an id-less field
+        // would break every lookup keyed on it. Fields settle on the refetch.
+        const { fields: _fields, ...rest } = patch
         qc.setQueryData<Tracker[]>(
           key,
-          previous.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+          previous.map((t) => (t.id === id ? { ...t, ...rest } : t)),
         )
       }
       return { previous }
@@ -143,7 +211,38 @@ export function useLogMoment(profileId: string): UseMutationResult<Event, Error,
   return useMutation({
     mutationFn: (tracker) => api.createEvent({ trackerId: tracker.id }),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['events', profileId] })
+      void qc.invalidateQueries({ queryKey: keys.events(profileId) })
+    },
+  })
+}
+
+/**
+ * Adds captured values to an event that is *already logged*.
+ *
+ * This is the second half of the capture flow and never the first: the event
+ * exists before this hook is ever called, so a failure here loses the values,
+ * not the log.
+ */
+export function useCaptureValues(
+  profileId: string,
+): UseMutationResult<
+  Event,
+  Error,
+  { eventId: string; values: Record<string, string | number | boolean> }
+> {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ eventId, values }) => api.updateEvent(eventId, { values }),
+    onSuccess: (event) => {
+      const key = keys.running(profileId)
+      const previous = qc.getQueryData<Event[]>(key)
+      if (previous) {
+        qc.setQueryData<Event[]>(
+          key,
+          previous.map((e) => (e.id === event.id ? event : e)),
+        )
+      }
+      void qc.invalidateQueries({ queryKey: keys.events(profileId) })
     },
   })
 }

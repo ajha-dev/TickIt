@@ -2,6 +2,7 @@ import type {
   DeletePreviewProfile,
   DeletePreviewTracker,
   Event,
+  FieldDefInput,
   Profile,
   Tracker,
   TrackerType,
@@ -141,6 +142,7 @@ export function createTracker(input: {
   type: TrackerType
   colour?: string
   icon?: string
+  fields?: FieldDefInput[]
 }): Promise<Tracker> {
   return request('/trackers', { method: 'POST', body: input })
 }
@@ -153,6 +155,10 @@ export function updateTracker(
     icon?: string
     sortOrder?: number
     archivedAt?: number | null
+    /** Send the *whole* list. Fields carrying an existing id are updated in
+     *  place; fields without one are created. Omitted fields are removed —
+     *  which does not touch values already logged against them. */
+    fields?: FieldDefInput[]
   },
 ): Promise<Tracker> {
   return request(`/trackers/${id}`, { method: 'PATCH', body: patch })
