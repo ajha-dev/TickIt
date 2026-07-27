@@ -77,12 +77,28 @@ export const events = sqliteTable(
   ],
 )
 
+export type ReminderKind = 'IDLE' | 'SCHEDULE'
+
 /**
- * An idle reminder: "nothing logged on this tracker for `afterMs`".
+ * A reminder, of one of two kinds. They answer different questions and are
+ * alternatives, not layers — a tracker has at most one reminder.
+ *
+ * - `IDLE` — "nothing logged on this tracker for `afterMs`". Reactive: logging
+ *   resets the clock. `afterMs` / `quietFromMin` / `quietToMin` belong to it and
+ *   are null on a `SCHEDULE`.
+ * - `SCHEDULE` — "remind me at `timesMin` on `days`". Absolute: it fires whether
+ *   or not anything was ever logged. `days` / `timesMin` belong to it and are
+ *   null on an `IDLE`.
+ *
+ * The kind-specific columns are nullable rather than split into two tables: one
+ * tracker has one reminder either way, and a join for a row that is never
+ * ambiguous buys nothing. The route is what keeps the halves from being set at
+ * once, and it clears the other half on a kind change.
  *
  * `timeZone` is the one place the server stores a wall-clock concept. It exists
- * only so the sweep can evaluate the quiet window in the user's local time;
- * everything else in this schema is UTC epoch millis and stays that way.
+ * only so the sweep can evaluate the quiet window and resolve schedule
+ * occurrences in the user's local time; everything else in this schema is UTC
+ * epoch millis and stays that way.
  */
 export const reminders = sqliteTable(
   'reminders',
@@ -95,18 +111,33 @@ export const reminders = sqliteTable(
     profileId: text('profile_id')
       .notNull()
       .references(() => profiles.id, { onDelete: 'cascade' }),
-    afterMs: integer('after_ms').notNull(),
-    /** Minutes past LOCAL midnight, or null for "no quiet hours". */
+    /**
+     * Defaulted to 'IDLE' so every row that existed before SCHEDULE was a thing
+     * migrates to exactly what it already was.
+     */
+    kind: text('kind').$type<ReminderKind>().notNull().default('IDLE'),
+    /** IDLE only: the idle threshold. Null on a SCHEDULE. */
+    afterMs: integer('after_ms'),
+    /** IDLE only: minutes past LOCAL midnight, or null for "no quiet hours". */
     quietFromMin: integer('quiet_from_min'),
-    /** Minutes past local midnight; may be less than `quietFromMin` (wraps). */
+    /** IDLE only: minutes past local midnight; may be less than `quietFromMin` (wraps). */
     quietToMin: integer('quiet_to_min'),
+    /** SCHEDULE only: days of the week, 0..6, 0 = Sunday (JS `getDay` order). */
+    days: text('days', { mode: 'json' }).$type<number[]>(),
+    /** SCHEDULE only: minutes past local midnight, 0..1439, stored ascending. */
+    timesMin: text('times_min', { mode: 'json' }).$type<number[]>(),
     /** IANA name, e.g. "Asia/Kolkata". */
     timeZone: text('time_zone').notNull(),
     enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
     /**
-     * When this reminder last consumed an idle period. The sweep skips while
-     * `lastFiredAt >= anchor`, which is what makes it fire once per idle period
-     * instead of once every 60 seconds.
+     * IDLE: when this reminder last consumed an idle period — the sweep skips
+     * while `lastFiredAt >= anchor`, which is what makes it fire once per idle
+     * period instead of once every 60 seconds.
+     *
+     * SCHEDULE: the timestamp of the last occurrence dealt with — *the
+     * occurrence's own* timestamp, not the moment of sending, so a second sweep
+     * in the same minute cannot re-fire it and a clock adjustment cannot
+     * resurrect it.
      */
     lastFiredAt: integer('last_fired_at'),
     createdAt: integer('created_at').notNull(),

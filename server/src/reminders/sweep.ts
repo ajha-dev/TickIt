@@ -2,11 +2,11 @@ import { eq, sql } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { events, pushSubs, reminders, trackers } from '../db/schema.js'
 import { isPushConfigured, sendPush } from './push.js'
-import { buildPayload, shouldFire } from './rules.js'
+import { buildPayload, buildSchedulePayload, shouldFire, shouldFireSchedule } from './rules.js'
 
 export const SWEEP_INTERVAL_MS = 60_000
 
-export { shouldFire } from './rules.js'
+export { shouldFire, shouldFireSchedule } from './rules.js'
 
 /**
  * One pass over every enabled reminder.
@@ -25,7 +25,10 @@ export async function sweepOnce(now: number): Promise<void> {
     .select({
       id: reminders.id,
       trackerId: reminders.trackerId,
+      kind: reminders.kind,
       afterMs: reminders.afterMs,
+      days: reminders.days,
+      timesMin: reminders.timesMin,
       quietFromMin: reminders.quietFromMin,
       quietToMin: reminders.quietToMin,
       timeZone: reminders.timeZone,
@@ -46,31 +49,79 @@ export async function sweepOnce(now: number): Promise<void> {
   const dead = new Set<string>()
 
   for (const r of rows) {
-    const anchor = r.lastActivity ?? r.createdAt
-    const decision = shouldFire({
-      now,
-      anchor,
-      afterMs: r.afterMs,
-      lastFiredAt: r.lastFiredAt,
-      quietFromMin: r.quietFromMin,
-      quietToMin: r.quietToMin,
-      timeZone: r.timeZone,
-    })
+    // What to send, and what to stamp `lastFiredAt` with. The two are decided
+    // together because a SCHEDULE can stamp without sending — an occurrence too
+    // old to be true is consumed silently.
+    let payload: { title: string; body: string; tag: string } | null = null
+    let stampAt: number | null = null
 
-    if (decision === 'NOT_IDLE' || decision === 'ALREADY_FIRED') continue
+    if (r.kind === 'SCHEDULE') {
+      // A SCHEDULE row without a schedule cannot occur through the routes; if
+      // one ever does, silence is the right failure.
+      if (!r.days || !r.timesMin) continue
 
-    // Quiet hours HOLD the idle period rather than consuming it: no stamp, so
-    // the first sweep after the window closes fires with a freshly computed
-    // body ("Nothing logged for 10h"). Consuming it here would mean sleeping
-    // through the night and being told nothing at all in the morning.
-    if (decision === 'QUIET') continue
+      const decision = shouldFireSchedule({
+        now,
+        days: r.days,
+        timesMin: r.timesMin,
+        lastFiredAt: r.lastFiredAt,
+        timeZone: r.timeZone,
+      })
+      if (decision.kind === 'NONE') continue
 
-    db.update(reminders)
-      .set({ lastFiredAt: now, updatedAt: now })
-      .where(eq(reminders.id, r.id))
-      .run()
+      // Both FIRE and CONSUME stamp, and both stamp THE OCCURRENCE'S OWN
+      // timestamp rather than `now`: that is what makes a second sweep in the
+      // same minute a no-op and stops a clock adjustment resurrecting it. It
+      // also consumes every older outstanding occurrence in one stroke, so a Pi
+      // that was off all week sends one notification, not thirty.
+      stampAt = decision.occurrenceAt
+      if (decision.kind === 'FIRE') {
+        payload = buildSchedulePayload(
+          r.trackerName,
+          r.trackerId,
+          decision.occurrenceAt,
+          r.timeZone,
+        )
+      }
+      // Quiet hours are deliberately not consulted here. See the contract: a
+      // scheduled reminder fires at a time the user picked.
+    } else {
+      // An IDLE row always has a threshold; the column is nullable only because
+      // a SCHEDULE has no use for it.
+      if (r.afterMs === null) continue
 
-    const payload = buildPayload(r.trackerName, r.trackerId, now - anchor)
+      const anchor = r.lastActivity ?? r.createdAt
+      const decision = shouldFire({
+        now,
+        anchor,
+        afterMs: r.afterMs,
+        lastFiredAt: r.lastFiredAt,
+        quietFromMin: r.quietFromMin,
+        quietToMin: r.quietToMin,
+        timeZone: r.timeZone,
+      })
+
+      if (decision === 'NOT_IDLE' || decision === 'ALREADY_FIRED') continue
+
+      // Quiet hours HOLD the idle period rather than consuming it: no stamp, so
+      // the first sweep after the window closes fires with a freshly computed
+      // body ("Nothing logged for 10h"). Consuming it here would mean sleeping
+      // through the night and being told nothing at all in the morning.
+      if (decision === 'QUIET') continue
+
+      stampAt = now
+      payload = buildPayload(r.trackerName, r.trackerId, now - anchor)
+    }
+
+    if (stampAt !== null) {
+      db.update(reminders)
+        .set({ lastFiredAt: stampAt, updatedAt: now })
+        .where(eq(reminders.id, r.id))
+        .run()
+    }
+
+    if (!payload) continue
+
     for (const sub of subs) {
       if (dead.has(sub.endpoint)) continue
       // One failing subscription must not abort the round for the others —

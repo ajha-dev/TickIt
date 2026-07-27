@@ -8,6 +8,8 @@ import {
   createReminderSchema,
   listRemindersQuerySchema,
   patchReminderSchema,
+  reminderFieldsForKindError,
+  sortTimes,
   zodMessage,
 } from '../lib/validate.js'
 
@@ -42,7 +44,7 @@ reminderRoutes.post('/reminders', async (c) => {
   const parsed = createReminderSchema.safeParse(await readJson(c))
   if (!parsed.success) return c.json({ error: zodMessage(parsed.error) }, 400)
 
-  const { trackerId, afterMs, timeZone } = parsed.data
+  const { trackerId, kind, timeZone } = parsed.data
 
   const tracker = db
     .select({ id: trackers.id, profileId: trackers.profileId })
@@ -61,19 +63,27 @@ reminderRoutes.post('/reminders', async (c) => {
   if (existing) return c.json({ error: 'REMINDER_EXISTS', reminderId: existing.id }, 409)
 
   const now = Date.now()
+  const isSchedule = kind === 'SCHEDULE'
   const row: ReminderRow = {
     id: newId(),
     trackerId: tracker.id,
     // Denormalised from the tracker, like Event.profileId — the client lists
     // reminders by profile and should not need a join to do it.
     profileId: tracker.profileId,
-    afterMs,
-    quietFromMin: parsed.data.quietFromMin ?? null,
-    quietToMin: parsed.data.quietToMin ?? null,
+    kind,
+    // Exactly one half of the row is populated. The schema allowed only the
+    // matching fields through, so the other half is null by construction.
+    afterMs: isSchedule ? null : (parsed.data.afterMs ?? null),
+    quietFromMin: isSchedule ? null : (parsed.data.quietFromMin ?? null),
+    quietToMin: isSchedule ? null : (parsed.data.quietToMin ?? null),
+    days: isSchedule ? (parsed.data.days ?? null) : null,
+    timesMin: isSchedule ? sortTimes(parsed.data.timesMin ?? []) : null,
     timeZone,
     enabled: true,
-    // Never fired. The sweep anchors a brand-new reminder on `createdAt`, so a
-    // dormant tracker stays quiet until it has genuinely been idle `afterMs`.
+    // Never fired. For IDLE the sweep anchors a brand-new reminder on
+    // `createdAt`, so a dormant tracker stays quiet until it has genuinely been
+    // idle `afterMs`; for SCHEDULE the first occurrence inside the window is
+    // the first thing it can send.
     lastFiredAt: null,
     createdAt: now,
     updatedAt: now,
@@ -91,17 +101,64 @@ reminderRoutes.patch('/reminders/:id', async (c) => {
   if (!existing) return c.json({ error: 'NOT_FOUND' }, 404)
 
   const p = parsed.data
-  const nextFrom = 'quietFromMin' in p ? (p.quietFromMin ?? null) : existing.quietFromMin
-  const nextTo = 'quietToMin' in p ? (p.quietToMin ?? null) : existing.quietToMin
-  const quietError = quietHoursError(nextFrom, nextTo)
-  if (quietError) return c.json({ error: quietError }, 400)
+  const nextKind = p.kind ?? existing.kind
+  const kindChanged = nextKind !== existing.kind
+
+  // The fields must belong to the kind the row ENDS UP as, not the one it
+  // started as: `{ kind: 'SCHEDULE', days, timesMin }` on an idle reminder is
+  // the whole point of allowing a kind change.
+  const fieldsError = reminderFieldsForKindError(nextKind, p)
+  if (fieldsError) return c.json({ error: fieldsError }, 400)
 
   const patch: Partial<ReminderRow> = { updatedAt: Date.now() }
-  if (p.afterMs !== undefined) patch.afterMs = p.afterMs
-  if ('quietFromMin' in p || 'quietToMin' in p) {
-    patch.quietFromMin = nextFrom
-    patch.quietToMin = nextTo
+
+  if (kindChanged) {
+    patch.kind = nextKind
+    // The new kind has never fired. Carrying the old kind's `lastFiredAt` over
+    // would either suppress the first occurrence or, for IDLE, claim an idle
+    // period had been reported when it never was.
+    patch.lastFiredAt = null
+    // Clear the kind being left, so the row cannot hold a stale threshold and a
+    // stale schedule at once.
+    if (nextKind === 'SCHEDULE') {
+      patch.afterMs = null
+      patch.quietFromMin = null
+      patch.quietToMin = null
+    } else {
+      patch.days = null
+      patch.timesMin = null
+    }
   }
+
+  if (nextKind === 'SCHEDULE') {
+    const nextDays = p.days ?? (kindChanged ? undefined : (existing.days ?? undefined))
+    const nextTimes = p.timesMin ?? (kindChanged ? undefined : (existing.timesMin ?? undefined))
+    // Becoming a SCHEDULE means bringing a schedule with you; there is nothing
+    // on the row to fall back to.
+    if (nextDays === undefined) return c.json({ error: 'DAYS_REQUIRED' }, 400)
+    if (nextTimes === undefined) return c.json({ error: 'TIMES_REQUIRED' }, 400)
+    if (p.days !== undefined) patch.days = nextDays
+    if (p.timesMin !== undefined) patch.timesMin = sortTimes(nextTimes)
+  } else {
+    const nextAfterMs = p.afterMs ?? (kindChanged ? undefined : (existing.afterMs ?? undefined))
+    if (nextAfterMs === undefined) return c.json({ error: 'AFTER_MS_REQUIRED' }, 400)
+    if (p.afterMs !== undefined) patch.afterMs = p.afterMs
+
+    // Quiet hours are all-or-nothing, checked against the merged row: sending
+    // only `quietToMin` to a reminder that already has a `quietFromMin` is a
+    // legitimate edit, and sending one end to a reminder with no window is not.
+    const base = kindChanged ? null : existing.quietFromMin
+    const baseTo = kindChanged ? null : existing.quietToMin
+    const nextFrom = 'quietFromMin' in p ? (p.quietFromMin ?? null) : base
+    const nextTo = 'quietToMin' in p ? (p.quietToMin ?? null) : baseTo
+    const quietError = quietHoursError(nextFrom, nextTo)
+    if (quietError) return c.json({ error: quietError }, 400)
+    if ('quietFromMin' in p || 'quietToMin' in p) {
+      patch.quietFromMin = nextFrom
+      patch.quietToMin = nextTo
+    }
+  }
+
   if (p.timeZone !== undefined) patch.timeZone = p.timeZone
   if (p.enabled !== undefined) patch.enabled = p.enabled
 

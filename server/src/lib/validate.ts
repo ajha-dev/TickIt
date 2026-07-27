@@ -259,6 +259,81 @@ function refineQuietHours(
   }
 }
 
+export const reminderKindSchema = z.enum(['IDLE', 'SCHEDULE'], {
+  errorMap: () => ({ message: 'BAD_REMINDER_KIND' }),
+})
+
+/** Contract: `timesMin` is capped at 8 entries. */
+export const MAX_TIMES = 8
+
+/** 0..6, 0 = Sunday, in JS `getDay` order. */
+const daySchema = z.number().int().min(0, 'BAD_DAY').max(6, 'BAD_DAY')
+
+/** Minutes past local midnight, 0..1439. */
+const timeMinSchema = z.number().int().min(0, 'BAD_TIME').max(MINUTES_PER_DAY - 1, 'BAD_TIME')
+
+/**
+ * `days` — 1–7 unique entries. Empty is rejected rather than treated as "every
+ * day": a schedule that never occurs is a bug, not a preference, and guessing
+ * which of the two the user meant is worse than saying so.
+ */
+export const daysSchema = z
+  .array(daySchema)
+  .min(1, 'DAYS_REQUIRED')
+  .max(7, 'TOO_MANY_DAYS')
+  .refine((d) => new Set(d).size === d.length, 'DUPLICATE_DAYS')
+
+/**
+ * `timesMin` — 1–8 unique entries. Sorting is left to the caller (see
+ * `sortTimes`) so the stored order is always ascending regardless of what the
+ * client sent.
+ */
+export const timesMinSchema = z
+  .array(timeMinSchema)
+  .min(1, 'TIMES_REQUIRED')
+  .max(MAX_TIMES, 'TOO_MANY_TIMES')
+  .refine((t) => new Set(t).size === t.length, 'DUPLICATE_TIMES')
+
+/** Stored ascending, so the client never has to sort and diffs stay readable. */
+export function sortTimes(times: number[]): number[] {
+  return [...times].sort((a, b) => a - b)
+}
+
+/**
+ * The kind decides which fields are allowed, and the rejection is loud in both
+ * directions. Quietly ignoring a `quietFromMin` sent with a SCHEDULE would
+ * leave the user believing they had silenced a reminder that the contract says
+ * must never be silenced.
+ */
+function refineByKind(
+  value: {
+    kind?: 'IDLE' | 'SCHEDULE'
+    afterMs?: number
+    quietFromMin?: number | null
+    quietToMin?: number | null
+    days?: number[]
+    timesMin?: number[]
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const fail = (message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, message })
+
+  if (value.kind === 'SCHEDULE') {
+    // Quiet hours exist because an idle reminder fires at a time nobody chose;
+    // a scheduled one fires at a time you picked deliberately.
+    if (value.quietFromMin !== undefined || value.quietToMin !== undefined) {
+      return fail('QUIET_HOURS_NOT_ALLOWED')
+    }
+    if (value.afterMs !== undefined) return fail('AFTER_MS_NOT_ALLOWED')
+    return
+  }
+
+  // IDLE — the schedule fields have no meaning here.
+  if (value.days !== undefined) return fail('DAYS_NOT_ALLOWED')
+  if (value.timesMin !== undefined) return fail('TIMES_NOT_ALLOWED')
+  refineQuietHours(value, ctx)
+}
+
 export const listRemindersQuerySchema = z.object({
   profileId: z.string().min(1),
 })
@@ -266,23 +341,81 @@ export const listRemindersQuerySchema = z.object({
 export const createReminderSchema = z
   .object({
     trackerId: z.string().min(1),
-    afterMs: afterMsSchema,
-    quietFromMin: quietMinSchema.optional(),
-    quietToMin: quietMinSchema.optional(),
-    timeZone: timeZoneSchema,
-  })
-  .strict()
-  .superRefine(refineQuietHours)
-
-export const patchReminderSchema = z
-  .object({
+    // Defaults to IDLE so clients written before SCHEDULE existed keep working
+    // unchanged.
+    kind: reminderKindSchema.default('IDLE'),
     afterMs: afterMsSchema.optional(),
     quietFromMin: quietMinSchema.optional(),
     quietToMin: quietMinSchema.optional(),
+    days: daysSchema.optional(),
+    timesMin: timesMinSchema.optional(),
+    timeZone: timeZoneSchema,
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    const fail = (message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, message })
+
+    // On create, the kind's own fields are required — a reminder with no
+    // threshold and no schedule can never fire.
+    if (v.kind === 'SCHEDULE') {
+      if (v.days === undefined) return fail('DAYS_REQUIRED')
+      if (v.timesMin === undefined) return fail('TIMES_REQUIRED')
+    } else if (v.afterMs === undefined) {
+      return fail('AFTER_MS_REQUIRED')
+    }
+
+    refineByKind(v, ctx)
+  })
+
+/**
+ * PATCH validates against the *merged* row, not the body alone: sending only
+ * `timesMin` to an existing SCHEDULE is a legitimate edit, and only the route
+ * knows what the row already holds. What this schema can say on its own is that
+ * the body does not mix the two kinds' fields — `kind` here is the kind the row
+ * will END UP as, which the route resolves before calling `patchReminderFields`.
+ */
+export const patchReminderSchema = z
+  .object({
+    kind: reminderKindSchema.optional(),
+    afterMs: afterMsSchema.optional(),
+    quietFromMin: quietMinSchema.optional(),
+    quietToMin: quietMinSchema.optional(),
+    days: daysSchema.optional(),
+    timesMin: timesMinSchema.optional(),
     timeZone: timeZoneSchema.optional(),
     enabled: z.boolean().optional(),
   })
   .strict()
+
+/**
+ * Does a body's field set belong to `kind`? Used by PATCH, where the kind may
+ * be coming from the existing row rather than the body, so the check cannot
+ * live inside the schema.
+ *
+ * Only *presence* is judged here — the ranges were already enforced by the
+ * schema. Returns an error code or null.
+ */
+export function reminderFieldsForKindError(
+  kind: 'IDLE' | 'SCHEDULE',
+  body: {
+    afterMs?: number
+    quietFromMin?: number | null
+    quietToMin?: number | null
+    days?: number[]
+    timesMin?: number[]
+  },
+): string | null {
+  if (kind === 'SCHEDULE') {
+    if (body.quietFromMin !== undefined || body.quietToMin !== undefined) {
+      return 'QUIET_HOURS_NOT_ALLOWED'
+    }
+    if (body.afterMs !== undefined) return 'AFTER_MS_NOT_ALLOWED'
+    return null
+  }
+  if (body.days !== undefined) return 'DAYS_NOT_ALLOWED'
+  if (body.timesMin !== undefined) return 'TIMES_NOT_ALLOWED'
+  return null
+}
 
 /* --------------------------------------------------------------------- push */
 
