@@ -6,7 +6,7 @@ import { nextColour, safeColour } from '../lib/colours.ts'
 import { draftsAreValid, toDrafts, toPayload, type FieldDraft } from '../lib/fields.ts'
 import { hapticLog, hapticUndo } from '../lib/haptics.ts'
 import { useCreateTracker, useDeleteTracker, useUpdateTracker } from '../lib/queries.ts'
-import { formatAfter, useReminders } from '../lib/remindersApi.ts'
+import { summariseReminder, useReminders } from '../lib/remindersApi.ts'
 import { FieldEditor } from './FieldEditor.tsx'
 import { ColourPicker, TextField } from './Form.tsx'
 import { ReminderEditor } from './ReminderEditor.tsx'
@@ -213,9 +213,11 @@ export function TrackerSheets({
             if (target) onState({ kind: 'reminder', tracker: target })
           }}
         >
+          {/* Which kind is set, not just that one is: "after 6h" and
+              "9:00 AM, 9:00 PM · weekdays" mean entirely different things. */}
           {reminder
-            ? `Reminder — after ${formatAfter(reminder.afterMs)}${reminder.enabled ? '' : ', paused'}`
-            : 'Remind me if it goes quiet…'}
+            ? `Reminder — ${summariseReminder(reminder)}${reminder.enabled ? '' : ', paused'}`
+            : 'Remind me…'}
         </SheetButton>
 
         <SheetButton tone="quiet" onClick={toggleArchive}>

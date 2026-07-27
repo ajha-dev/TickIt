@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { ApiError } from '../api.ts'
 import { EventRow } from '../components/EventRow.tsx'
+import { DayPickerSheet } from '../components/DayPickerSheet.tsx'
 import { EventSheet, type EventPatch } from '../components/EventSheet.tsx'
 import { addDays, endOfDay, formatDayHeading, startOfDay } from '../lib/days.ts'
 import { hapticUndo } from '../lib/haptics.ts'
@@ -58,6 +59,7 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
   const deleteEvent = useDeleteEvent(profileId)
 
   const [editing, setEditing] = useState<Event | null>(null)
+  const [pickingDay, setPickingDay] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const trackerById = useMemo(() => {
@@ -152,6 +154,7 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
         canGoForward={day < today}
         count={events.length}
         loading={eventsQuery.isFetching}
+        onOpenCalendar={() => setPickingDay(true)}
       />
 
       <main className="pad-safe-x pad-tabs flex-1 pt-3">
@@ -207,6 +210,14 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
         )}
       </main>
 
+      <DayPickerSheet
+        open={pickingDay}
+        day={day}
+        profileId={profileId}
+        onPick={setDay}
+        onClose={() => setPickingDay(false)}
+      />
+
       {editing ? (
         <EventSheet
           event={editing}
@@ -237,12 +248,14 @@ function DayPicker({
   canGoForward,
   count,
   loading,
+  onOpenCalendar,
 }: {
   day: number
   onChange: (next: number) => void
   canGoForward: boolean
   count: number
   loading: boolean
+  onOpenCalendar: () => void
 }) {
   const heading = formatDayHeading(day)
   const today = startOfDay(Date.now())
@@ -256,7 +269,12 @@ function DayPicker({
         <Arrow direction="back" onClick={() => onChange(addDays(day, -1))} />
 
         <div className="relative min-w-0 flex-1">
-          <label className="tap flex h-12 w-full cursor-pointer flex-col items-center justify-center rounded-xl active:bg-ink-850">
+          <button
+            type="button"
+            onClick={onOpenCalendar}
+            aria-label="Show another day"
+            className="tap flex h-12 w-full flex-col items-center justify-center rounded-xl active:bg-ink-850"
+          >
             <span className="flex max-w-full items-center gap-1.5">
               <span className="truncate text-[17px] leading-tight font-semibold tracking-[-0.02em]">
                 {heading}
@@ -267,23 +285,8 @@ function DayPicker({
                 <path d="M3.5 10h17M8 3.5v3M16 3.5v3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
               </svg>
             </span>
-            {relative ? (
-              <span className="stencil mt-1">{formatDay(day)}</span>
-            ) : null}
-
-            {/* The native picker, laid invisibly over its own label: the phone's
-                own calendar, opened by tapping the date it is showing. */}
-            <input
-              type="date"
-              aria-label="Show another day"
-              value={toDateInput(day)}
-              onChange={(e) => {
-                const next = fromDateInput(e.target.value)
-                if (next !== null) onChange(next)
-              }}
-              className="absolute inset-0 cursor-pointer opacity-0"
-            />
-          </label>
+            {relative ? <span className="stencil mt-1">{formatDay(day)}</span> : null}
+          </button>
         </div>
 
         <Arrow direction="forward" onClick={() => onChange(addDays(day, 1))} disabled={!canGoForward} />
@@ -365,9 +368,6 @@ function EmptyDay({
       <p className="mt-2.5 text-[19px] leading-snug tracking-[-0.02em] text-balance">
         {profileName} has no entries for {formatDay(day)}.
       </p>
-      <p className="mt-2.5 text-[15px] leading-snug text-text-dim">
-        Step back a day with the arrow, or pick a date from the calendar above.
-      </p>
     </div>
   )
 }
@@ -383,30 +383,4 @@ function dayWord(ms: number): string {
   const today = startOfDay(Date.now())
   if (startOfDay(ms) === addDays(today, 1)) return 'tomorrow'
   return formatDayHeading(ms).toLowerCase()
-}
-
-/* ------------------------------------------------- local date ⇄ midnight -- */
-
-/**
- * `<input type="date">` speaks `YYYY-MM-DD` and nothing else. Both directions
- * go through the `Date` constructor's local-time semantics — the same bridge
- * the edit sheet uses — so the value the picker shows is the day the rest of
- * the screen is resolving, in the device's zone, with no offset arithmetic.
- */
-function toDateInput(ms: number): string {
-  const d = new Date(ms)
-  const pad = (n: number, width = 2) => String(n).padStart(width, '0')
-  return `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-
-function fromDateInput(value: string): number | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
-  if (!match) return null
-  const [year, month, dayOfMonth] = match.slice(1).map(Number) as [number, number, number]
-  const d = new Date(year, month - 1, dayOfMonth, 0, 0, 0, 0)
-  // The constructor rolls 31 February into March rather than refusing it.
-  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== dayOfMonth) {
-    return null
-  }
-  return d.getTime()
 }
