@@ -92,13 +92,20 @@ export function DashboardScreen({ profile }: { profile: Profile }) {
   }
 
   return (
-    <div className="relative z-10 flex min-h-dvh flex-col">
+    // `h-dvh`, not `min-h-dvh`: this screen is sized TO the viewport rather than
+    // by its content, which is what lets the chart claim the leftover height.
+    // With min-height the flex child would happily grow past the bottom.
+    <div className="relative z-10 flex h-dvh flex-col overflow-hidden">
       <header className="pad-safe-top pad-safe-x pb-3">
         <h1 className="lockup text-[15px] font-semibold tracking-[-0.02em]">Dashboard</h1>
         <p className="stencil mt-1.5">{profile.name}</p>
       </header>
 
-      <main className="pad-safe-x pad-tabs flex-1">
+      {/* A flex column that owns the viewport: the picker and range sit at their
+          natural height, the chart takes everything left over, and the legend
+          rests on the bottom above the tab bar. `min-h-0` is what stops the
+          chart pushing the legend off-screen. */}
+      <main className="pad-safe-x pad-tabs flex min-h-0 flex-1 flex-col">
         {trackersQuery.isPending ? (
           <p className="stencil">loading</p>
         ) : tracker === null ? (
@@ -145,7 +152,7 @@ export function DashboardScreen({ profile }: { profile: Profile }) {
               <ErrorCard onRetry={window.refetch} />
             ) : scheme === null ? null : (
               <>
-                <div className="mt-5">
+                <div className="mt-4 flex min-h-0 flex-1 flex-col">
                   <Actogram
                     tracker={tracker}
                     days={days}
@@ -156,15 +163,17 @@ export function DashboardScreen({ profile }: { profile: Profile }) {
                 </div>
 
                 {marks === 0 && !window.isPending ? (
-                  <p className="mt-4 text-[17px] leading-snug text-balance text-text-dim">
+                  <p className="mt-3 shrink-0 text-[15px] leading-snug text-balance text-text-dim">
                     Nothing logged for {tracker.name} in the last {range} days. The grid above is
                     the range it looked in.
                   </p>
                 ) : null}
 
-                <ActogramLegend scheme={scheme} />
-
-                {window.capped ? <CapNotice /> : null}
+                {/* Pinned below the chart rather than floating after it. */}
+                <div className="shrink-0">
+                  <ActogramLegend scheme={scheme} />
+                  {window.capped ? <CapNotice /> : null}
+                </div>
               </>
             )}
           </>

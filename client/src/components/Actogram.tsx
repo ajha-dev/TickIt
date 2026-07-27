@@ -28,12 +28,21 @@ import type { SeriesScheme } from '../lib/series.ts'
 import { formatClock, formatDuration } from '../lib/time.ts'
 import type { Event, Tracker } from '../types.ts'
 
-/** Hour rules, by wall clock so a DST day's marks stay honest. */
-const RULE_HOURS = [0, 6, 12, 18] as const
+/**
+ * Hour rules, by wall clock so a DST day's marks stay honest.
+ *
+ * The chart now fills the screen's height rather than a fixed 320px, so the
+ * y-axis has room to be read at three-hour resolution instead of six. Majors
+ * stay heavier — quarters of the day are the landmarks the eye navigates by —
+ * and minors fill in between them so a 04:00 feed can be placed without
+ * measuring against a distant rule.
+ */
+const MAJOR_HOURS = [0, 6, 12, 18] as const
+const MINOR_HOURS = [3, 9, 15, 21] as const
+/** Every label the axis carries, top to bottom. */
+const LABEL_HOURS = [0, 3, 6, 9, 12, 15, 18, 21, 24] as const
 /** Daylight band, lightly lifted out of the night so the raster reads. */
 const DAY_BAND = [6, 18] as const
-
-const PLOT_HEIGHT = 320
 
 export function Actogram({
   tracker,
@@ -56,15 +65,18 @@ export function Actogram({
   // per 7 columns, and always the last day so "today" is anchored.
   const labelEvery = Math.max(1, Math.ceil(days.length / 7))
 
+  // The chart fills whatever height its parent gives it. The `min-h-0` on the
+  // figure and on the plot column is what lets a flex child actually shrink to
+  // the viewport, instead of being pushed past the bottom of the screen.
   return (
-    <figure className="m-0">
-      <div className="flex gap-1.5">
+    <figure className="m-0 flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 gap-1.5">
         <YAxis />
 
-        <div className="min-w-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div
-            className="relative overflow-hidden rounded-lg bg-ink-850"
-            style={{ height: PLOT_HEIGHT, boxShadow: 'inset 0 0 0 1px var(--ink-700)' }}
+            className="relative min-h-0 flex-1 overflow-hidden rounded-lg bg-ink-850"
+            style={{ boxShadow: 'inset 0 0 0 1px var(--ink-700)' }}
           >
             <Bands day={days[0] ?? Date.now()} />
 
@@ -124,13 +136,19 @@ function monthSpan(days: number[]): string {
 
 function YAxis() {
   return (
-    <div className="relative w-[26px] shrink-0" style={{ height: PLOT_HEIGHT }}>
-      {[...RULE_HOURS, 24].map((hour) => (
+    <div className="relative h-full w-[26px] shrink-0">
+      {LABEL_HOURS.map((hour) => (
         <span
           key={hour}
-          className="stencil absolute right-0"
+          className={`stencil absolute right-0 ${
+            (MAJOR_HOURS as readonly number[]).includes(hour) || hour === 24
+              ? ''
+              : 'text-text-dim/55'
+          }`}
           style={{
-            top: `${(hour / 24) * PLOT_HEIGHT}px`,
+            top: `${(hour / 24) * 100}%`,
+            // The first and last labels are pulled inside the plot's own edges;
+            // everything between is centred on its rule.
             transform: hour === 0 ? 'none' : hour === 24 ? 'translateY(-100%)' : 'translateY(-50%)',
           }}
         >
@@ -164,7 +182,15 @@ function Bands({ day }: { day: number }) {
         className="absolute inset-x-0 bg-white/[0.022]"
         style={{ top: `${bandTop * 100}%`, height: `${(bandBottom - bandTop) * 100}%` }}
       />
-      {RULE_HOURS.map((hour) =>
+      {MINOR_HOURS.map((hour) => (
+        <div
+          key={hour}
+          aria-hidden
+          className="absolute inset-x-0 h-px bg-ink-700/45"
+          style={{ top: `${at(hour) * 100}%` }}
+        />
+      ))}
+      {MAJOR_HOURS.map((hour) =>
         hour === 0 ? null : (
           <div
             key={hour}
