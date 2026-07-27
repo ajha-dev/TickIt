@@ -5,12 +5,13 @@ import { isAlreadyRunning } from '../api.ts'
 import { CaptureSheet } from '../components/CaptureSheet.tsx'
 import { RunningCard } from '../components/RunningCard.tsx'
 import { Sheet, SheetButton } from '../components/Sheet.tsx'
+import { TrackerSheets, type TrackerSheetState } from '../components/TrackerSheets.tsx'
 import { TrackerTile } from '../components/TrackerTile.tsx'
 import { UndoToast, type ToastState } from '../components/UndoToast.tsx'
 import { safeColour } from '../lib/colours.ts'
 import { useGridReorder } from '../lib/gridReorder.ts'
-import { isPending } from '../lib/outbox.ts'
 import { hapticLog, hapticStop, hapticUndo } from '../lib/haptics.ts'
+import { isPending } from '../lib/outbox.ts'
 import {
   useCaptureValues,
   useDeleteEvent,
@@ -35,6 +36,21 @@ interface Capture {
   event: Event
 }
 
+/**
+ * The Log screen, and the only screen that matters.
+ *
+ * It has two modes, and the separation between them is the whole point:
+ *
+ * - **Normal.** A tile is a log target. One tap logs. Nothing intercepts,
+ *   delays or arbitrates that tap — PLAN's first principle, unchanged.
+ * - **Edit** (the pencil). A tile is a thing to manage: tapping opens its
+ *   drawer, a grip appears for reordering, and archived trackers surface at the
+ *   bottom so there is a route back from archiving one.
+ *
+ * Managing trackers used to be its own tab. Folding it in here means the grid
+ * you arrange is literally the grid you log from, rather than a list that
+ * claims to be it.
+ */
 export function Home({
   profile,
   profiles,
@@ -59,30 +75,29 @@ export function Home({
   const [conflict, setConflict] = useState<Conflict | null>(null)
   const [capture, setCapture] = useState<Capture | null>(null)
   const [switching, setSwitching] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [sheet, setSheet] = useState<TrackerSheetState>(null)
 
-  const trackers = useMemo(
-    () => (trackersQuery.data ?? []).filter((t) => t.archivedAt === null),
-    [trackersQuery.data],
-  )
+  const all = useMemo(() => trackersQuery.data ?? [], [trackersQuery.data])
+  const trackers = useMemo(() => all.filter((t) => t.archivedAt === null), [all])
+  const archived = useMemo(() => all.filter((t) => t.archivedAt !== null), [all])
   const running = runningQuery.data ?? []
 
   const trackerById = useMemo(() => {
     const map = new Map<string, Tracker>()
-    for (const t of trackersQuery.data ?? []) map.set(t.id, t)
+    for (const t of all) map.set(t.id, t)
     return map
-  }, [trackersQuery.data])
+  }, [all])
 
   const runningTrackerIds = useMemo(() => new Set(running.map((e) => e.trackerId)), [running])
 
   /**
-   * Long-press a tile to pick it up and drop it anywhere in the grid. This is
-   * the same `sortOrder` the Trackers screen reorders, so the two views can
-   * never disagree — and a plain tap is untouched by it, which is the only way
-   * "one tap to log" survives having a second gesture on the same target.
+   * Reorder writes the same `sortOrder` the server sorts on, so the grid you
+   * arrange here *is* the order every other view sees. Armed only in edit mode.
    */
   const reorderTrackers = useReorderTrackers(profileId)
   const trackerIds = useMemo(() => trackers.map((t) => t.id), [trackers])
-  const grid = useGridReorder(trackerIds, reorderTrackers)
+  const grid = useGridReorder(trackerIds, reorderTrackers, editing)
 
   const dismissToast = useCallback(() => setToast(null), [])
 
@@ -108,6 +123,12 @@ export function Home({
 
   const onTapTracker = useCallback(
     (tracker: Tracker) => {
+      // In edit mode a tile is not a log target. Nothing below this line runs.
+      if (editing) {
+        setSheet({ kind: 'actions', tracker })
+        return
+      }
+
       hapticLog()
 
       if (tracker.type === 'INTERVAL') {
@@ -131,7 +152,11 @@ export function Home({
         onSuccess: (event) => {
           setToast((current) =>
             current && current.key === key
-              ? { ...current, eventId: event.id, clock: formatClock(event.startAt) }
+              ? {
+                  ...current,
+                  eventId: event.id,
+                  clock: formatClock(event.startAt),
+                }
               : current,
           )
           offerCapture(tracker, event)
@@ -143,7 +168,7 @@ export function Home({
         },
       })
     },
-    [logMoment, startTracker, offerCapture],
+    [editing, logMoment, startTracker, offerCapture],
   )
 
   const onSaveCapture = useCallback(
@@ -201,41 +226,98 @@ export function Home({
     [conflict, stopSpan, startTracker],
   )
 
+  const openCreate = () => setSheet({ kind: 'form', tracker: null })
+
+  const toggleEditing = () => {
+    // Leaving edit mode must not leave a drawer behind it.
+    if (editing) setSheet(null)
+    setEditing((e) => !e)
+  }
+
+  const status = editing ? 'edit mode' : running.length > 0 ? `${running.length} running` : 'ready'
+
   return (
     <div className="relative z-10 flex min-h-dvh flex-col">
-      <header className="pad-safe-top pad-safe-x flex items-start justify-between gap-3 pb-2">
-        <div>
-          <p className="lockup text-[15px] leading-none font-semibold tracking-[-0.02em]">TickIt</p>
-          <p className="stencil mt-1.5">
-            {running.length > 0 ? `${running.length} running` : 'ready'}
-          </p>
+      {/* Profile on the left, the two management controls on the right. The
+          left column is `min-w-0 flex-1` and the chip truncates inside it, so a
+          long profile name can never push the pencil or the plus off-screen. */}
+      <header className="pad-safe-top pad-safe-x flex items-start justify-between gap-2 pb-2">
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={() => setSwitching(true)}
+            aria-label={`Profile: ${profile.name}. Switch profile`}
+            className="tap -ml-1 flex h-11 max-w-full items-center gap-2 rounded-full border border-ink-700 bg-ink-850 pr-3 pl-3.5 active:bg-ink-800"
+          >
+            <span
+              aria-hidden
+              className="size-2.5 shrink-0 rounded-full"
+              style={{
+                background: safeColour(profile.colour),
+                boxShadow: `0 0 10px ${safeColour(profile.colour)}`,
+              }}
+            />
+            <span className="truncate text-[15px] font-medium tracking-[-0.01em]">
+              {profile.name}
+            </span>
+            <svg
+              viewBox="0 0 24 24"
+              className="size-3.5 shrink-0 text-text-dim"
+              fill="none"
+              aria-hidden
+            >
+              <path
+                d="M7 10l5 5 5-5"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          <p className={`stencil mt-2 ml-0.5 ${editing ? 'text-mauve' : ''}`}>{status}</p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setSwitching(true)}
-          aria-label={`Profile: ${profile.name}. Switch profile`}
-          className="tap -mt-1.5 -mr-1 flex h-11 max-w-[58%] items-center gap-2 rounded-full border border-ink-700 bg-ink-850 pr-3 pl-3.5 active:bg-ink-800"
-        >
-          <span
-            aria-hidden
-            className="size-2.5 shrink-0 rounded-full"
-            style={{
-              background: safeColour(profile.colour),
-              boxShadow: `0 0 10px ${safeColour(profile.colour)}`,
-            }}
-          />
-          <span className="truncate text-[15px] font-medium tracking-[-0.01em]">{profile.name}</span>
-          <svg viewBox="0 0 24 24" className="size-3.5 shrink-0 text-text-dim" fill="none" aria-hidden>
-            <path
-              d="M7 10l5 5 5-5"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={toggleEditing}
+            disabled={all.length === 0}
+            aria-pressed={editing}
+            aria-label={editing ? 'Done editing trackers' : 'Edit trackers'}
+            className={`tap flex size-11 items-center justify-center rounded-full border disabled:opacity-30 ${
+              editing
+                ? 'border-mauve/60 bg-mauve/18 text-mauve'
+                : 'border-ink-700 bg-ink-850 text-text-dim active:bg-ink-800'
+            }`}
+          >
+            <svg viewBox="0 0 24 24" className="size-[19px]" fill="none" aria-hidden>
+              <path
+                d="M14.8 5.4l3.8 3.8M4.5 19.5l4.6-.9 9.2-9.2-3.7-3.7-9.2 9.2-.9 4.6z"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            onClick={openCreate}
+            aria-label="New tracker"
+            className="tap flex size-11 items-center justify-center rounded-full border border-periwinkle/45 bg-periwinkle/15 text-periwinkle active:bg-periwinkle/25"
+          >
+            <svg viewBox="0 0 24 24" className="size-[21px]" fill="none" aria-hidden>
+              <path
+                d="M12 5.6v12.8M5.6 12h12.8"
+                stroke="currentColor"
+                strokeWidth="1.9"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        </div>
       </header>
 
       {/* Content is bottom-anchored so the tiles sit in the thumb arc — but
@@ -280,41 +362,124 @@ export function Home({
               Try again
             </button>
           </div>
-        ) : trackers.length === 0 ? (
+        ) : all.length === 0 ? (
           <div className="rounded-tile hairline bg-ink-850 p-5">
             <p className="stencil">no trackers in {profile.name}</p>
             <p className="mt-2.5 text-[19px] leading-snug tracking-[-0.02em] text-balance">
               TickIt ships with no opinions. Describe the first thing worth logging.
             </p>
-            <Link
-              href="/trackers"
-              className="tap mt-5 flex h-[60px] w-full items-center justify-center rounded-2xl bg-periwinkle text-[17px] font-semibold text-ink-900"
+            <button
+              type="button"
+              onClick={openCreate}
+              className="tap mt-5 flex h-[60px] w-full items-center justify-center rounded-2xl bg-periwinkle text-[17px] font-semibold text-ink-900 active:bg-wisteria"
             >
               Create a tracker
-            </Link>
+            </button>
           </div>
         ) : (
-          <section
-            ref={grid.containerRef}
-            aria-label="Trackers"
-            className="grid grid-cols-2 gap-3"
-          >
-            {trackers.map((tracker, index) => (
-              // The wrapper is what gets dragged; `grid` makes it stretch the
-              // tile to the cell so a row stays level while a neighbour moves.
-              <div key={tracker.id} className="grid" {...grid.itemProps(index)}>
-                <TrackerTile
-                  tracker={tracker}
-                  running={runningTrackerIds.has(tracker.id)}
-                  onTap={() => onTapTracker(tracker)}
-                />
+          <>
+            {/* Every tracker in this profile is archived. Without this the Log
+                screen would be blank with nothing to explain it, and the way
+                back would be a pencil nobody had a reason to press. */}
+            {trackers.length === 0 && !editing ? (
+              <div className="rounded-tile hairline bg-ink-850 p-5">
+                <p className="stencil">everything here is archived</p>
+                <p className="mt-2.5 text-[19px] leading-snug tracking-[-0.02em] text-balance">
+                  Nothing is showing on the log. Archived trackers keep every event they ever
+                  had — bring one back, or start something new.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  className="tap mt-5 flex h-[60px] w-full items-center justify-center rounded-2xl border border-mauve/55 bg-mauve/12 text-[17px] font-semibold"
+                >
+                  Show the archived ones
+                </button>
               </div>
-            ))}
-          </section>
+            ) : null}
+
+            {trackers.length > 0 ? (
+              <section
+                ref={grid.containerRef}
+                aria-label="Trackers"
+                className="grid grid-cols-2 gap-3"
+              >
+                {trackers.map((tracker, index) => (
+                  // The wrapper is what gets dragged; `grid` makes it stretch
+                  // the tile to the cell so a row stays level while a
+                  // neighbour moves under it.
+                  <div
+                    key={tracker.id}
+                    className={`relative grid rounded-tile ${editing ? 'ring-1 ring-mauve/35' : ''}`}
+                    {...grid.itemProps(index)}
+                  >
+                    <TrackerTile
+                      tracker={tracker}
+                      running={runningTrackerIds.has(tracker.id)}
+                      onTap={() => onTapTracker(tracker)}
+                      label={editing ? `Edit ${tracker.name}` : undefined}
+                    />
+
+                    {editing && trackers.length > 1 ? (
+                      <button
+                        type="button"
+                        aria-label={`Reorder ${tracker.name}. Position ${index + 1} of ${trackers.length}. Drag, or press the arrow keys.`}
+                        className="absolute top-1.5 right-1.5 flex size-10 items-center justify-center rounded-xl border border-ink-600 bg-ink-800/85 text-text-dim backdrop-blur-sm active:bg-ink-700"
+                        {...grid.handleProps(index)}
+                      >
+                        <svg viewBox="0 0 24 24" className="size-[18px]" fill="none" aria-hidden>
+                          <path
+                            d="M5 9h14M5 15h14"
+                            stroke="currentColor"
+                            strokeWidth="1.7"
+                            strokeLinecap="round"
+                          />
+                        </svg>
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </section>
+            ) : null}
+
+            {editing ? (
+              <p className="stencil text-center">tap a tile to change it · drag to reorder</p>
+            ) : null}
+
+            {/* Archiving a tracker hides it from the grid. This is the way
+                back — without it, folding the Trackers screen away would
+                strand every archived tracker with no route to restore it. */}
+            {editing && archived.length > 0 ? (
+              <section aria-label="Archived trackers" className="mt-2">
+                <p className="stencil mb-2.5">archived · hidden from the log</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {archived.map((tracker) => (
+                    <div
+                      key={tracker.id}
+                      role="group"
+                      aria-label={`Archived: ${tracker.name}`}
+                      className="grid rounded-tile opacity-45"
+                    >
+                      <TrackerTile
+                        tracker={tracker}
+                        running={false}
+                        onTap={() => setSheet({ kind: 'actions', tracker })}
+                        label={`Archived: ${tracker.name}. Open options`}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+          </>
         )}
       </main>
 
       {toast ? <UndoToast toast={toast} onUndo={onUndo} onDismiss={dismissToast} /> : null}
+
+      {/* Create, edit, reminder, archive and the counted delete confirm — the
+          same sheets, from the one place that manages a tracker. */}
+      <TrackerSheets profileId={profileId} trackers={all} state={sheet} onState={setSheet} />
 
       {/* ------------------------------------------------- profile switcher -- */}
       <Sheet

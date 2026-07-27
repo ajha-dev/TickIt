@@ -1,24 +1,15 @@
 /**
- * Long-press-then-drag reordering for a two-dimensional grid.
+ * Drag-to-reorder for a two-dimensional grid, driven by an explicit handle.
  *
- * Built for the Log screen, where the primary gesture is already taken: PLAN's
- * first principle is that **one tap logs**, so reordering has to be a different
- * gesture entirely and must not put a single millisecond in front of a tap.
+ * This is edit-mode only, and that is the whole design. PLAN's first principle
+ * is that **one tap logs**; the Log grid's tiles are log targets, so as long as
+ * the screen is in its normal mode nothing here is armed at all — no timer, no
+ * gesture arbitration, no way for tidying the grid to write an event. Reorder
+ * lives behind the pencil, where a tile is a thing to manage rather than a
+ * thing to press.
  *
- * The rules that follow from that, all of them load-bearing:
- *
- * - **A tap logs immediately.** Nothing here delays, debounces or intercepts a
- *   short press; the tile's own `onClick` fires exactly as it did before.
- * - **A drag never logs.** Once the long press has armed, the click that
- *   inevitably follows the release is swallowed in the capture phase, before it
- *   can reach the tile. A phantom feed logged every time you tidy the grid
- *   would be worse than not having reordering at all.
- * - **Movement before the timer cancels the press.** Sliding a thumb over a
- *   tile is a scroll, not a pickup, so any real movement inside the long-press
- *   window abandons it and the page scrolls normally.
- * - **The page holds still during a drag** — a non-passive `touchmove`
- *   preventDefault, attached only while a drag is live. Outside a drag,
- *   scrolling is completely untouched.
+ * The handle is the only element that gives up `touch-action`, so ordinary
+ * scrolling through a long grid is untouched even while editing.
  */
 
 import {
@@ -27,17 +18,14 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type PointerEvent as ReactPointerEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from 'react'
 
 import { hapticLog, hapticStop } from './haptics.ts'
 import { arrayMove } from './trackerOrder.ts'
 
-/** Long enough not to fire on a fumbled tap, short enough not to feel stuck. */
-const LONG_PRESS_MS = 420
-/** Past this, the finger is scrolling and the pickup is abandoned. */
-const MOVE_TOLERANCE_PX = 10
 /** Drag within this of a screen edge and the page follows. */
 const EDGE_PX = 90
 const EDGE_MAX_SPEED = 14
@@ -81,55 +69,57 @@ export interface GridReorder {
   /** Put this on the element whose children are the reorderable tiles. */
   containerRef: (node: HTMLElement | null) => void
   dragging: boolean
-  /** Index of the tile currently under the finger, or null. */
+  /** Index of the tile currently in hand, or null. */
   draggedIndex: number | null
-  /** Index the tile would land on if released now, or null. */
+  /** Index it would land on if released now, or null. */
   targetIndex: number | null
   /** Spread onto each tile's wrapper element. */
   itemProps: (index: number) => {
+    onClickCapture: (e: ReactMouseEvent<HTMLElement>) => void
+    style: CSSProperties
+  }
+  /** Spread onto the grip inside that wrapper. */
+  handleProps: (index: number) => {
     onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void
     onPointerMove: (e: ReactPointerEvent<HTMLElement>) => void
     onPointerUp: (e: ReactPointerEvent<HTMLElement>) => void
     onPointerCancel: (e: ReactPointerEvent<HTMLElement>) => void
+    onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => void
     onContextMenu: (e: ReactMouseEvent<HTMLElement>) => void
-    onClickCapture: (e: ReactMouseEvent<HTMLElement>) => void
     style: CSSProperties
   }
 }
 
 /**
- * @param ids   the tiles' ids, in the order they are rendered
+ * @param ids     the tiles' ids, in the order they are rendered
  * @param onCommit called once, on release, with the new order
+ * @param enabled false in normal mode — nothing is armed
  */
-export function useGridReorder(ids: string[], onCommit: (next: string[]) => void): GridReorder {
+export function useGridReorder(
+  ids: string[],
+  onCommit: (next: string[]) => void,
+  enabled: boolean,
+): GridReorder {
   const [active, setActive] = useState<Active | null>(null)
 
   const container = useRef<HTMLElement | null>(null)
   const idsRef = useRef(ids)
   idsRef.current = ids
 
-  /** The armed-but-not-yet-fired long press. */
-  const pending = useRef<{
-    pointerId: number
-    index: number
-    x: number
-    y: number
-    timer: ReturnType<typeof setTimeout>
-    el: HTMLElement
-  } | null>(null)
-
-  /** Set the moment a drag arms; consumed by the click that follows release. */
+  /**
+   * Belt and braces. The grip is its own button, so a drag's click can no
+   * longer reach a tile — but a swallowed click costs nothing and a phantom
+   * 3am feed logged by a stray gesture would cost a great deal.
+   */
   const swallowClick = useRef(false)
   const clientY = useRef(0)
 
-  const cancelPending = useCallback(() => {
-    if (pending.current) clearTimeout(pending.current.timer)
-    pending.current = null
-  }, [])
-
-  useEffect(() => () => cancelPending(), [cancelPending])
-
   const isDragging = active !== null
+
+  // Nothing survives leaving edit mode mid-gesture.
+  useEffect(() => {
+    if (!enabled) setActive(null)
+  }, [enabled])
 
   // Hold the page still, but *only* while a tile is actually in hand.
   useEffect(() => {
@@ -167,59 +157,57 @@ export function useGridReorder(ids: string[], onCommit: (next: string[]) => void
   const targetIndex =
     active && active.slots.length > 0 ? nearestSlot(active.slots, active.doc) : null
 
+  const move = useCallback(
+    (from: number, delta: number) => {
+      const to = from + delta
+      if (to < 0 || to >= idsRef.current.length) return
+      hapticLog()
+      onCommit(arrayMove(idsRef.current, from, to))
+    },
+    [onCommit],
+  )
+
   const itemProps = useCallback(
     (index: number) => ({
-      onPointerDown: (e: ReactPointerEvent<HTMLElement>) => {
-        if (e.pointerType === 'mouse' && e.button !== 0) return
-        if (idsRef.current.length < 2) return
+      onClickCapture: (e: ReactMouseEvent<HTMLElement>) => {
+        if (!swallowClick.current) return
         swallowClick.current = false
-        cancelPending()
+        e.preventDefault()
+        e.stopPropagation()
+      },
+      style: styleFor(index, active, targetIndex),
+    }),
+    [active, targetIndex],
+  )
 
-        const el = e.currentTarget
-        const pointerId = e.pointerId
-        const x = e.clientX
-        const y = e.clientY
-        clientY.current = y
+  const handleProps = useCallback(
+    (index: number) => ({
+      onPointerDown: (e: ReactPointerEvent<HTMLElement>) => {
+        if (!enabled || idsRef.current.length < 2) return
+        if (e.pointerType === 'mouse' && e.button !== 0) return
 
-        const timer = setTimeout(() => {
-          pending.current = null
+        const parent = container.current
+        if (!parent) return
+        const slots = Array.from(parent.children).map((child) => {
+          const r = child.getBoundingClientRect()
+          return { x: r.x + window.scrollX, y: r.y + window.scrollY, w: r.width, h: r.height }
+        })
+        if (slots.length !== idsRef.current.length) return
 
-          const parent = container.current
-          if (!parent) return
-          const slots = Array.from(parent.children).map((child) => {
-            const r = child.getBoundingClientRect()
-            return { x: r.x + window.scrollX, y: r.y + window.scrollY, w: r.width, h: r.height }
-          })
-          if (slots.length !== idsRef.current.length) return
-
-          // Now, and only now, is this no longer a tap. The heavier haptic is
-          // the signal that the app has left logging mode.
-          hapticStop()
-          swallowClick.current = true
-          try {
-            el.setPointerCapture(pointerId)
-          } catch {
-            /* the pointer is already gone */
-          }
-          const doc = { x: x + window.scrollX, y: y + window.scrollY }
-          setActive({ pointerId, from: index, startDoc: doc, doc, slots })
-        }, LONG_PRESS_MS)
-
-        pending.current = { pointerId, index, x, y, timer, el }
+        clientY.current = e.clientY
+        swallowClick.current = true
+        hapticStop()
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId)
+        } catch {
+          /* the pointer is already gone */
+        }
+        const doc = { x: e.clientX + window.scrollX, y: e.clientY + window.scrollY }
+        setActive({ pointerId: e.pointerId, from: index, startDoc: doc, doc, slots })
       },
 
       onPointerMove: (e: ReactPointerEvent<HTMLElement>) => {
         clientY.current = e.clientY
-
-        const p = pending.current
-        if (p && p.pointerId === e.pointerId) {
-          // Movement before the timer means this was a scroll all along.
-          if (Math.abs(e.clientX - p.x) > MOVE_TOLERANCE_PX || Math.abs(e.clientY - p.y) > MOVE_TOLERANCE_PX) {
-            cancelPending()
-          }
-          return
-        }
-
         setActive((a) => {
           if (!a || a.pointerId !== e.pointerId) return a
           const doc = { x: e.clientX + window.scrollX, y: e.clientY + window.scrollY }
@@ -229,7 +217,6 @@ export function useGridReorder(ids: string[], onCommit: (next: string[]) => void
       },
 
       onPointerUp: (e: ReactPointerEvent<HTMLElement>) => {
-        cancelPending()
         if (!active || active.pointerId !== e.pointerId) return
         try {
           e.currentTarget.releasePointerCapture(e.pointerId)
@@ -247,26 +234,34 @@ export function useGridReorder(ids: string[], onCommit: (next: string[]) => void
       },
 
       onPointerCancel: (e: ReactPointerEvent<HTMLElement>) => {
-        cancelPending()
         setActive((a) => (a && a.pointerId === e.pointerId ? null : a))
       },
 
-      // A long press on a tile must not raise the platform's own menu.
+      /**
+       * The accessible half. A grid has no single "up", so the arrows move the
+       * tile one place earlier or later in the same order the server stores —
+       * which is exactly what a drag does, without a pointer.
+       */
+      onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => {
+        if (!enabled) return
+        if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+          e.preventDefault()
+          move(index, -1)
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+          e.preventDefault()
+          move(index, 1)
+        }
+      },
+
       onContextMenu: (e: ReactMouseEvent<HTMLElement>) => {
-        if (swallowClick.current || active) e.preventDefault()
-      },
-
-      // The one line that stops a reorder from logging a phantom event.
-      onClickCapture: (e: ReactMouseEvent<HTMLElement>) => {
-        if (!swallowClick.current) return
-        swallowClick.current = false
         e.preventDefault()
-        e.stopPropagation()
       },
 
-      style: styleFor(index, active, targetIndex),
+      // The ONLY element that gives up touch-action. Scrolling the grid with a
+      // thumb anywhere else keeps working, edit mode or not.
+      style: { touchAction: 'none' } as CSSProperties,
     }),
-    [active, targetIndex, cancelPending, onCommit],
+    [active, enabled, move, onCommit],
   )
 
   return {
@@ -277,6 +272,39 @@ export function useGridReorder(ids: string[], onCommit: (next: string[]) => void
     draggedIndex: active?.from ?? null,
     targetIndex,
     itemProps,
+    handleProps,
+  }
+}
+
+/**
+ * Keep the dragged tile inside the grid's bounding box.
+ *
+ * The pointer itself is never clamped — targeting still follows the finger
+ * wherever it goes — so this only stops the *visual* from leaving the column.
+ */
+function clampToGrid(
+  slots: Slot[],
+  index: number,
+  dx: number,
+  dy: number,
+): { dx: number; dy: number } {
+  const own = slots[index]
+  if (!own) return { dx, dy }
+
+  let left = Infinity
+  let right = -Infinity
+  let top = Infinity
+  let bottom = -Infinity
+  for (const s of slots) {
+    left = Math.min(left, s.x)
+    right = Math.max(right, s.x + s.w)
+    top = Math.min(top, s.y)
+    bottom = Math.max(bottom, s.y + s.h)
+  }
+
+  return {
+    dx: Math.max(left - own.x, Math.min(right - (own.x + own.w), dx)),
+    dy: Math.max(top - own.y, Math.min(bottom - (own.y + own.h), dy)),
   }
 }
 
@@ -293,11 +321,19 @@ function styleFor(index: number, active: Active | null, target: number | null): 
   if (!active || target === null) return {}
 
   if (index === active.from) {
+    // The tile keeps the point you grabbed it by under your finger — but it is
+    // clamped to the grid's own bounds, so grabbing a grip in the top-right
+    // corner never swings the tile off the side of a 390px screen.
+    const { dx, dy } = clampToGrid(
+      active.slots,
+      active.from,
+      active.doc.x - active.startDoc.x,
+      active.doc.y - active.startDoc.y,
+    )
     return {
-      transform: `translate3d(${active.doc.x - active.startDoc.x}px, ${active.doc.y - active.startDoc.y}px, 0) scale(1.05)`,
+      transform: `translate3d(${dx}px, ${dy}px, 0) scale(1.05)`,
       transition: 'none',
       zIndex: 30,
-      position: 'relative',
       touchAction: 'none',
       userSelect: 'none',
       WebkitUserSelect: 'none',
@@ -306,8 +342,7 @@ function styleFor(index: number, active: Active | null, target: number | null): 
       // Mauve is THEME's "selected / in hand", and the tile is lifted off the
       // field rather than dimmed — a dimmed tile reads as disabled.
       borderRadius: 20,
-      boxShadow:
-        '0 0 0 1.5px var(--color-mauve), 0 26px 46px -14px rgba(0,0,0,0.95)',
+      boxShadow: '0 0 0 1.5px var(--color-mauve), 0 26px 46px -14px rgba(0,0,0,0.95)',
     }
   }
 

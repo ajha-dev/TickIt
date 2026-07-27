@@ -9,7 +9,6 @@ import { DashboardScreen } from './screens/Dashboard.tsx'
 import { Home } from './screens/Home.tsx'
 import { ProfilesScreen } from './screens/Profiles.tsx'
 import { TimelineScreen } from './screens/Timeline.tsx'
-import { TrackersScreen } from './screens/Trackers.tsx'
 
 export function App() {
   const profilesQuery = useProfiles()
@@ -66,10 +65,9 @@ export function App() {
           {profile ? <DashboardScreen profile={profile} /> : <NoProfile />}
         </Route>
 
-        <Route path="/trackers">
-          {profile ? <TrackersScreen profile={profile} /> : <NoProfile />}
-        </Route>
-
+        {/* There is no /trackers route. Managing trackers is the Log screen's
+            edit mode; a saved link to the old screen falls through to the
+            catch-all, which is the honest answer — it no longer exists. */}
         <Route path="/profiles">
           <ProfilesScreen selectedId={profile?.id ?? null} onSelectProfile={select} />
         </Route>

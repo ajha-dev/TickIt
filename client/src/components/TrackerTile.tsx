@@ -17,10 +17,17 @@ export function TrackerTile({
   tracker,
   running,
   onTap,
+  label,
 }: {
   tracker: Tracker
   running: boolean
   onTap: () => void
+  /**
+   * Overrides the spoken label. The same tile is a log button in normal mode
+   * and a settings button in edit mode, so the default "Log Water" would tell a
+   * screen-reader user the opposite of what the control now does.
+   */
+  label?: string
 }) {
   const colour = safeColour(tracker.colour)
   const isSpan = tracker.type === 'INTERVAL'
@@ -29,7 +36,7 @@ export function TrackerTile({
     <button
       type="button"
       onClick={onTap}
-      aria-label={`${isSpan ? (running ? 'Restart' : 'Start') : 'Log'} ${tracker.name}`}
+      aria-label={label ?? `${isSpan ? (running ? 'Restart' : 'Start') : 'Log'} ${tracker.name}`}
       className="tap relative flex min-h-[132px] flex-col justify-between overflow-hidden rounded-tile border p-4 text-left active:brightness-[1.3]"
       style={{
         borderColor: tintedBorder(colour, running ? 44 : 20),

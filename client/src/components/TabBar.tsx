@@ -20,8 +20,8 @@ interface Tab {
   icon: (active: boolean) => ReactNode
 }
 
-/* Timeline and Dashboard slot straight into this list when they land; the bar
-   is a flex row of equal columns, so a fourth and fifth tab need no redesign. */
+/* The bar is a flex row of equal columns, so adding or removing a tab needs no
+   redesign — only a reason. */
 const TABS: Tab[] = [
   {
     href: '/',
@@ -99,26 +99,14 @@ const TABS: Tab[] = [
       </>
     ),
   },
-  {
-    href: '/trackers',
-    label: 'Trackers',
-    icon: () => (
-      <>
-        <circle cx="5.5" cy="7" r="1.7" fill="currentColor" />
-        <circle cx="5.5" cy="16" r="1.7" fill="currentColor" />
-        <path
-          d="M10.5 7h8M10.5 16h5"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-        />
-      </>
-    ),
-  },
-  // Profiles is deliberately NOT a tab. Switching context is something you do
-  // from the Log screen's header, where you can see which profile you are in;
-  // managing them is a rare housekeeping task reached from that same switcher.
-  // Giving it a permanent quarter of the bar overstated how often it is used.
+  // Trackers is deliberately NOT a tab either, any more. Managing a tracker is
+  // now the Log screen's edit mode (the pencil), so the grid you arrange is the
+  // grid you log from. A tab that only reached a list *describing* that grid was
+  // a quarter of the bar spent on indirection.
+  //
+  // Profiles was never a tab, for the same reason: switching context happens in
+  // the Log header where you can see which profile you are in, and managing them
+  // is rare housekeeping reached from that same switcher.
 ]
 
 export function TabBar() {

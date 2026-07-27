@@ -215,25 +215,75 @@ back history is not adding data. Verified — echoing an orphaned value returns
 
 ## Reminders
 
-One kind only: **idle reminders** — "nothing logged on this tracker for N hours".
-That is the feeding case and the one the plan names. Fixed-time reminders
-("meds at 09:00") are a genuinely different feature and are not in scope.
+Two kinds, and they answer different questions.
+
+- **`IDLE`** — "nothing logged on this tracker for N hours". Reactive: the clock
+  is reset by *logging*. This is the feeding case.
+- **`SCHEDULE`** — "remind me at these times on these days". Absolute: it fires
+  whether or not anything was ever logged. This is the medicine case, and it is
+  what an ordinary reminders app does.
+
+A tracker has **at most one reminder**, of one kind. They are alternatives, not
+layers.
 
 ```ts
 Reminder { id, trackerId, profileId,
+           kind,                // 'IDLE' | 'SCHEDULE'
+           timeZone,            // IANA name — both kinds
+           enabled, lastFiredAt,
+           createdAt, updatedAt,
+
+           // kind = 'IDLE' only, null otherwise
            afterMs,             // idle threshold
            quietFromMin,        // null, or minutes past LOCAL midnight
            quietToMin,          // null, or minutes past local midnight; may wrap
-           timeZone,            // IANA name, e.g. "Asia/Kolkata"
-           enabled, lastFiredAt,
-           createdAt, updatedAt }
+
+           // kind = 'SCHEDULE' only, null otherwise
+           days,                // int[] of 0..6, 0 = Sunday (JS getDay order)
+           timesMin }           // int[] of 0..1439, minutes past local midnight
 
 PushSub  { id, endpoint, p256dh, auth, createdAt, lastSeenAt }
 ```
 
+### SCHEDULE rules
+
+- `days` — 1–7 entries, unique, each 0–6. Empty is rejected (`DAYS_REQUIRED`); a
+  schedule that never occurs is a bug, not a preference.
+- `timesMin` — 1–8 entries, unique, each 0–1439, stored sorted ascending.
+  Rejected empty (`TIMES_REQUIRED`) or over the cap (`TOO_MANY_TIMES`).
+- An occurrence is a `(day, time)` pair resolved in the reminder's `timeZone`.
+  Two doses at 09:00 and 21:00 on weekdays is 10 occurrences a week.
+
+**Quiet hours do not apply to `SCHEDULE`**, and the fields are rejected on it
+(`QUIET_HOURS_NOT_ALLOWED`). Quiet hours exist because an idle reminder fires at
+a time nobody chose; a scheduled one fires at a time you picked deliberately.
+Silencing it would be overriding an explicit instruction with an implicit one,
+and a missed 22:00 dose is exactly the failure the reminder was set to prevent.
+
+**Staleness, not queueing.** A scheduled occurrence fires only if it came due
+within the last **60 minutes**. An older one is marked consumed and dropped
+silently. If the Pi was off overnight, waking to "Medication — due at 09:00"
+at 3pm is worse than useless: it says something false about now, and acting on
+it means a double dose. The window is generous enough to survive a reboot or a
+sleeping phone, short enough that a notification always means *roughly now*.
+
+**Once per occurrence.** `lastFiredAt` is set to the occurrence's own timestamp,
+not to the moment of sending, so a later sweep in the same minute cannot re-fire
+it and a clock adjustment cannot resurrect it.
+
+DST is resolved through the stored `timeZone`, so 09:00 stays 09:00 across a
+transition rather than drifting by an hour.
+
 - `GET /api/reminders?profileId=…` → `Reminder[]`
-- `POST /api/reminders` `{ trackerId, afterMs, quietFromMin?, quietToMin?, timeZone }` → `Reminder`
-- `PATCH /api/reminders/:id` `{ afterMs?, quietFromMin?, quietToMin?, timeZone?, enabled? }`
+- `POST /api/reminders` → `Reminder`
+  - `IDLE`: `{ trackerId, kind: 'IDLE', afterMs, quietFromMin?, quietToMin?, timeZone }`
+  - `SCHEDULE`: `{ trackerId, kind: 'SCHEDULE', days, timesMin, timeZone }`
+  - `kind` may be omitted and defaults to `IDLE`, so existing clients keep working.
+- `PATCH /api/reminders/:id` — any of the above fields, plus `enabled`.
+  **Changing `kind` is allowed**, and clears the fields belonging to the kind
+  being left, so a reminder cannot hold a stale threshold and a stale schedule
+  at once. `lastFiredAt` is reset on a kind change: the new kind has never
+  fired.
 - `DELETE /api/reminders/:id` → `204`
 - `GET /api/push/key` → `{ publicKey }` (VAPID public key)
 - `POST /api/push/subscribe` `{ endpoint, keys: { p256dh, auth } }` → `204`, idempotent
