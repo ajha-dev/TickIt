@@ -67,16 +67,17 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
   }, [trackersQuery.data])
 
   /**
-   * Everything that happened *during* this local day, earliest first.
+   * Everything that happened *during* this local day, newest first.
    *
    * Two things make this more than a filter on `startAt`. A span belongs to
    * every day it touches, not only the one it began on — an overnight feed is
    * part of both nights. And a long-running span may have started before the
    * query's lookback, so the running list is merged in and de-duplicated by id.
    *
-   * Ascending, deliberately: a day is read forwards. The first feed of the
-   * morning is where the story starts, and the gaps between rows only mean
-   * anything when time runs down the page.
+   * Descending: the most recent entry is the one being checked or corrected, so
+   * it belongs at the top where the thumb already is, without scrolling a full
+   * day to reach it. A carried-over span from the previous night therefore
+   * sorts to the bottom, which is where it happened.
    */
   const events = useMemo(() => {
     const byId = new Map<string, Event>()
@@ -98,7 +99,7 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
       const finishedAt = e.endAt ?? now
       if (finishedAt > dayStart) out.push(e)
     }
-    return out.sort((a, b) => a.startAt - b.startAt)
+    return out.sort((a, b) => b.startAt - a.startAt)
   }, [eventsQuery.data, runningQuery.data, dayStart, dayEnd])
 
   const truncated = (eventsQuery.data?.length ?? 0) >= LIMIT
