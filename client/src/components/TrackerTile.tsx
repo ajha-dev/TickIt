@@ -24,7 +24,6 @@ export function TrackerTile({
 }) {
   const colour = safeColour(tracker.colour)
   const isSpan = tracker.type === 'INTERVAL'
-  const fieldCount = tracker.fields?.length ?? 0
 
   return (
     <button
@@ -60,11 +59,12 @@ export function TrackerTile({
         <h3 className="text-[20px] leading-[1.1] font-semibold tracking-[-0.025em] text-text [overflow-wrap:anywhere]">
           {tracker.name}
         </h3>
-        {/* "asks" not "requires" — the sheet appears *after* the event is
-            already saved, and every field on it is optional. */}
-        {fieldCount > 0 ? (
-          <p className="mt-1.5 text-[11px] leading-none text-text-dim">
-            asks {fieldCount} {fieldCount === 1 ? 'thing' : 'things'}
+        {/* Names the question rather than counting fields — with one field
+            there is a real answer to "what will it ask me?". "asks" not
+            "requires": the sheet opens after the event is already saved. */}
+        {tracker.fields[0] ? (
+          <p className="mt-1.5 truncate text-[11px] leading-none text-text-dim">
+            asks {tracker.fields[0].label.toLowerCase()}
           </p>
         ) : null}
       </div>

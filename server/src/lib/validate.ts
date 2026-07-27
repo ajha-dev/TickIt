@@ -28,7 +28,7 @@ export const patchProfileSchema = z.object({
 
 /* -------------------------------------------------------------------- fields */
 
-export const MAX_FIELDS = 6
+export const MAX_FIELDS = 1
 
 export const fieldKindSchema = z.enum(['CHOICE', 'NUMBER', 'BOOL', 'TEXT'])
 

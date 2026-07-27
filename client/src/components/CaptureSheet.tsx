@@ -1,71 +1,75 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
-import { Sheet, SheetButton } from './Sheet.tsx'
+import { Sheet } from './Sheet.tsx'
+import { hapticLog } from '../lib/haptics.ts'
 import { formatClock } from '../lib/time.ts'
 import type { Event, FieldDef, Tracker } from '../types.ts'
 
 type Draft = Record<string, string | number | boolean>
 
 /**
- * The capture sheet.
+ * The capture sheet — one optional field, no buttons.
  *
- * It opens *after* the event exists. The tap already logged; this is a chance
- * to add detail to something that is safely on the server, and closing it
- * without touching anything is a completely normal outcome — the log stands.
- * Nothing here is required, nothing here can fail the log, and there is no
- * validation gate on the way out.
+ * It opens *after* the event exists. The tap already logged; this only adds
+ * detail to something safely on the server, so there is nothing to confirm and
+ * nothing to cancel.
+ *
+ * Committing is the selection itself. CHOICE and BOOL have a natural moment —
+ * you tap a value, it saves, the sheet closes. NUMBER and TEXT do not, so the
+ * keyboard's return key commits, and dismissing the sheet commits whatever was
+ * typed rather than throwing it away. Nothing entered is ever silently lost,
+ * and an empty dismissal simply leaves the event as logged.
  */
 export function CaptureSheet({
   tracker,
   event,
-  saving,
   onSave,
   onClose,
 }: {
   tracker: Tracker
   event: Event
-  saving: boolean
   onSave: (values: Draft) => void
   onClose: () => void
 }) {
   const [draft, setDraft] = useState<Draft>(() => ({ ...event.values }))
+  // Guards against double-committing when a return key and the resulting
+  // dismissal both fire.
+  const done = useRef(false)
 
-  const set = (fieldId: string, value: string | number | boolean | undefined) => {
-    setDraft((current) => {
-      const next = { ...current }
-      if (value === undefined || value === '') delete next[fieldId]
-      else next[fieldId] = value
-      return next
-    })
+  const commit = (values: Draft) => {
+    if (done.current) return
+    done.current = true
+    if (Object.keys(values).length > 0) {
+      hapticLog()
+      onSave(values)
+    }
+    onClose()
   }
 
-  const touched = Object.keys(draft).length > 0
+  const field = tracker.fields[0]
 
   return (
     <Sheet
       open
-      onClose={onClose}
+      onClose={() => commit(draft)}
       eyebrow={`logged ${formatClock(event.startAt)} · saved`}
       title={tracker.name}
-      body="Already recorded. Add anything worth keeping, or close this — nothing here is required."
+      body="Already logged. Add this if it's useful, or swipe away."
     >
-      <div className="-mt-3 mb-1 flex flex-col gap-4">
-        {tracker.fields.map((field) => (
+      <div className="-mt-3 mb-2">
+        {field ? (
           <FieldInput
-            key={field.id}
             field={field}
             value={draft[field.id]}
-            onChange={(value) => set(field.id, value)}
+            // A pick commits and closes immediately — the pick IS the button.
+            onPick={(value) => commit(value === undefined ? {} : { [field.id]: value })}
+            onType={(value) =>
+              setDraft(value === undefined ? {} : { [field.id]: value })
+            }
+            onDone={() => commit(draft)}
           />
-        ))}
+        ) : null}
       </div>
-
-      <SheetButton tone="primary" onClick={() => onSave(draft)} disabled={!touched || saving}>
-        {saving ? 'Saving…' : 'Save these'}
-      </SheetButton>
-      <SheetButton tone="quiet" onClick={onClose}>
-        {touched ? 'Discard these' : 'Nothing to add'}
-      </SheetButton>
     </Sheet>
   )
 }
@@ -73,62 +77,60 @@ export function CaptureSheet({
 function FieldInput({
   field,
   value,
-  onChange,
+  onPick,
+  onType,
+  onDone,
 }: {
   field: FieldDef
   value: string | number | boolean | undefined
-  onChange: (next: string | number | boolean | undefined) => void
+  onPick: (next: string | number | boolean | undefined) => void
+  onType: (next: string | number | boolean | undefined) => void
+  onDone: () => void
 }) {
   return (
     <div>
-      <p className="stencil mb-2.5">{field.label}</p>
+      <p className="stencil mb-3">{field.label}</p>
 
       {field.kind === 'CHOICE' ? (
-        <div role="radiogroup" aria-label={field.label} className="flex flex-wrap gap-2">
+        <div role="radiogroup" aria-label={field.label} className="flex flex-wrap gap-2.5">
           {(field.options ?? []).map((option) => (
             <Chip
               key={option}
               label={option}
               selected={value === option}
-              // Tapping the selected option clears it: a mistaken tap must be
-              // undoable without leaving the sheet.
-              onSelect={() => onChange(value === option ? undefined : option)}
+              onSelect={() => onPick(option)}
             />
           ))}
         </div>
       ) : null}
 
       {field.kind === 'BOOL' ? (
-        <div role="radiogroup" aria-label={field.label} className="flex gap-2">
-          <Chip
-            label="Yes"
-            selected={value === true}
-            onSelect={() => onChange(value === true ? undefined : true)}
-          />
-          <Chip
-            label="No"
-            selected={value === false}
-            onSelect={() => onChange(value === false ? undefined : false)}
-          />
+        <div role="radiogroup" aria-label={field.label} className="flex gap-2.5">
+          <Chip label="Yes" selected={value === true} onSelect={() => onPick(true)} />
+          <Chip label="No" selected={value === false} onSelect={() => onPick(false)} />
         </div>
       ) : null}
 
       {field.kind === 'NUMBER' ? (
         <div className="flex items-center gap-3">
           <input
+            autoFocus
             aria-label={field.label}
             inputMode="decimal"
             enterKeyHint="done"
-            value={value === undefined ? '' : String(value)}
+            defaultValue={value === undefined ? '' : String(value)}
             onChange={(e) => {
               const raw = e.target.value.trim()
-              if (raw === '') return onChange(undefined)
+              if (raw === '') return onType(undefined)
               const parsed = Number(raw)
               // Keep the keystroke on screen even mid-typing ("1." or "-"),
               // but only ever hand a real number to the server.
-              onChange(Number.isFinite(parsed) ? parsed : undefined)
+              onType(Number.isFinite(parsed) ? parsed : undefined)
             }}
-            className="digits h-[56px] min-w-0 flex-1 rounded-2xl border border-ink-600 bg-ink-700 px-4 text-[22px] outline-none focus:border-periwinkle"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onDone()
+            }}
+            className="digits h-[60px] min-w-0 flex-1 rounded-2xl border border-ink-600 bg-ink-700 px-4 text-[24px] outline-none focus:border-periwinkle"
           />
           {field.unit ? (
             <span className="shrink-0 text-[15px] text-text-dim">{field.unit}</span>
@@ -138,20 +140,24 @@ function FieldInput({
 
       {field.kind === 'TEXT' ? (
         <input
+          autoFocus
           aria-label={field.label}
-          value={value === undefined ? '' : String(value)}
-          onChange={(e) => onChange(e.target.value === '' ? undefined : e.target.value)}
+          defaultValue={value === undefined ? '' : String(value)}
+          onChange={(e) => onType(e.target.value === '' ? undefined : e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onDone()
+          }}
           enterKeyHint="done"
           autoCapitalize="sentences"
           maxLength={200}
-          className="h-[56px] w-full rounded-2xl border border-ink-600 bg-ink-700 px-4 text-[17px] outline-none focus:border-periwinkle"
+          className="h-[60px] w-full rounded-2xl border border-ink-600 bg-ink-700 px-4 text-[17px] outline-none focus:border-periwinkle"
         />
       ) : null}
     </div>
   )
 }
 
-/** Full chroma on a small element only: a 40px chip, tinted at 12%. */
+/** Full chroma on a small element only: a chip, tinted at 12%. */
 function Chip({
   label,
   selected,
@@ -167,8 +173,8 @@ function Chip({
       role="radio"
       aria-checked={selected}
       onClick={onSelect}
-      className={`tap h-[46px] rounded-full border px-4 text-[16px] ${
-        selected ? 'border-mauve bg-mauve/12 text-text' : 'border-ink-600 bg-ink-700 text-text-dim'
+      className={`tap h-[54px] rounded-full border px-5 text-[17px] ${
+        selected ? 'border-mauve bg-mauve/12 text-text' : 'border-ink-600 bg-ink-700 text-text'
       }`}
     >
       {label}

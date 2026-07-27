@@ -364,7 +364,6 @@ export function Home({
         <CaptureSheet
           tracker={capture.tracker}
           event={capture.event}
-          saving={captureValues.isPending}
           onSave={onSaveCapture}
           onClose={() => setCapture(null)}
         />

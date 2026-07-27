@@ -14,7 +14,7 @@
 
 import type { FieldDef, FieldDefInput, FieldKind } from '../types.ts'
 
-export const MAX_FIELDS = 6
+export const MAX_FIELDS = 1
 export const MAX_LABEL = 24
 export const MIN_OPTIONS = 2
 export const MAX_OPTIONS = 6

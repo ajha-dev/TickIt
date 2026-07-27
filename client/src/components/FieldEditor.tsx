@@ -3,12 +3,10 @@ import {
   draftError,
   FIELD_KINDS,
   KIND_COPY,
-  MAX_FIELDS,
   MAX_LABEL,
   MAX_OPTIONS,
   MAX_OPTION_LENGTH,
   MAX_UNIT,
-  moveDraft,
   withKind,
   type FieldDraft,
 } from '../lib/fields.ts'
@@ -17,14 +15,11 @@ import type { FieldKind } from '../types.ts'
 /**
  * The field editor inside the tracker sheet.
  *
- * Fields are the *optional* half of a tracker, so the editor stays collapsed to
- * a single "Add a field" button until asked for. Everything the server would
- * reject is caught here and said in words under the field it belongs to —
- * a 400 arriving after Save is a worse way to learn that a Choice needs two
- * options.
- *
- * Reordering is buttons rather than drag: this gets used one-handed, and a drag
- * handle in a scrolling sheet fights the scroll.
+ * A tracker gets at most ONE optional field. That cap is the design, not a
+ * limitation: the field is answered in the half-second after a tap, and one
+ * question is answerable in that window while three are a form. Everything the
+ * server would reject is caught here and said in words — a 400 arriving after
+ * Save is a worse way to learn that a Choice needs two options.
  */
 export function FieldEditor({
   drafts,
@@ -33,80 +28,57 @@ export function FieldEditor({
   drafts: FieldDraft[]
   onChange: (next: FieldDraft[]) => void
 }) {
-  const atLimit = drafts.length >= MAX_FIELDS
-
-  const update = (index: number, next: FieldDraft) => {
-    onChange(drafts.map((d, i) => (i === index ? next : d)))
-  }
+  const draft = drafts[0]
 
   return (
-    <section aria-label="Fields">
-      <div className="mb-3 flex items-baseline justify-between gap-3">
-        <p className="stencil">fields · optional</p>
-        <p className="text-[12px] text-text-dim">
-          {drafts.length}/{MAX_FIELDS}
-        </p>
-      </div>
+    <section aria-label="Field">
+      <p className="stencil mb-3">field · optional</p>
 
-      {drafts.length === 0 ? (
-        <p className="mb-3 text-[13px] leading-snug text-text-dim">
-          Captured after the tap, never before it. A tracker with no fields logs just as well.
-        </p>
+      {draft ? (
+        <FieldCard
+          draft={draft}
+          error={draftError(draft, drafts)}
+          onChange={(next) => onChange([next])}
+          onRemove={() => onChange([])}
+        />
       ) : (
-        <ul className="mb-3 flex flex-col gap-2.5">
-          {drafts.map((draft, index) => (
-            <li key={draft.key}>
-              <FieldCard
-                draft={draft}
-                index={index}
-                total={drafts.length}
-                error={draftError(draft, drafts)}
-                onChange={(next) => update(index, next)}
-                onMove={(to) => onChange(moveDraft(drafts, index, to))}
-                onRemove={() => onChange(drafts.filter((_, i) => i !== index))}
-              />
-            </li>
-          ))}
-        </ul>
+        <>
+          <p className="mb-3 text-[13px] leading-snug text-text-dim">
+            One thing to note down, asked after the tap and never before it. A tracker with no
+            field logs just as well.
+          </p>
+          <button
+            type="button"
+            onClick={() => onChange([blankDraft()])}
+            className="tap flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-ink-600 bg-ink-700 text-[15px] text-text"
+          >
+            <span aria-hidden className="text-[17px] leading-none text-periwinkle">
+              +
+            </span>
+            Add a field
+          </button>
+        </>
       )}
-
-      <button
-        type="button"
-        disabled={atLimit}
-        onClick={() => onChange([...drafts, blankDraft()])}
-        className="tap flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-ink-600 bg-ink-700 text-[15px] text-text disabled:opacity-40"
-      >
-        <span aria-hidden className="text-[17px] leading-none text-periwinkle">
-          +
-        </span>
-        {atLimit ? `${MAX_FIELDS} fields is the limit` : 'Add a field'}
-      </button>
     </section>
   )
 }
 
 function FieldCard({
   draft,
-  index,
-  total,
   error,
   onChange,
-  onMove,
   onRemove,
 }: {
   draft: FieldDraft
-  index: number
-  total: number
   error: string | null
   onChange: (next: FieldDraft) => void
-  onMove: (to: number) => void
   onRemove: () => void
 }) {
   return (
     <div className="rounded-2xl border border-ink-600 bg-ink-850 p-3">
       <div className="flex items-center gap-2">
         <input
-          aria-label={`Field ${index + 1} label`}
+          aria-label="Field label"
           value={draft.label}
           onChange={(e) => onChange({ ...draft, label: e.target.value })}
           placeholder="Side, Distance, Assisted…"
@@ -115,18 +87,6 @@ function FieldCard({
           autoCorrect="off"
           spellCheck={false}
           className="h-11 min-w-0 flex-1 rounded-xl border border-ink-600 bg-ink-800 px-3 text-[16px] outline-none placeholder:text-text-dim/60 focus:border-periwinkle"
-        />
-        <IconButton
-          label={`Move ${draft.label || 'field'} up`}
-          disabled={index === 0}
-          onClick={() => onMove(index - 1)}
-          path="M12 18V6M6.5 11.5L12 6l5.5 5.5"
-        />
-        <IconButton
-          label={`Move ${draft.label || 'field'} down`}
-          disabled={index === total - 1}
-          onClick={() => onMove(index + 1)}
-          path="M12 6v12M6.5 12.5L12 18l5.5-5.5"
         />
         <IconButton
           label={`Remove ${draft.label || 'field'}`}

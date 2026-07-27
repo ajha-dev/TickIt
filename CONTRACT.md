@@ -152,8 +152,12 @@ a Span whose tracker still says `INSTANT`.
 
 ## Field definitions and values
 
-`Tracker.fields` is an ordered `FieldDef[]`, max 6 per tracker. Validation on
-create/patch:
+`Tracker.fields` is a `FieldDef[]` holding **at most one field**. The cap is a
+design decision, not a storage limit: the field is answered in the half-second
+after a tap, and one question is answerable in that window while several are a
+form. It stays an array so the shape never needs a migration if that changes.
+
+Over the cap → 400 `TOO_MANY_FIELDS`. Validation on create/patch:
 
 - `label` — 1–24 chars, required, unique within the tracker (case-insensitive).
 - `kind` — one of `CHOICE | NUMBER | BOOL | TEXT`.
@@ -173,9 +177,14 @@ current fields on `POST /api/events` and `PATCH /api/events/:id`:
 - Unknown `fieldId` → 400 `UNKNOWN_FIELD`.
 - Wrong type for the field's `kind` → 400 `BAD_FIELD_VALUE`.
 - `CHOICE` value not in `options` → 400 `BAD_FIELD_VALUE`.
-- **Every field is optional.** `{}` is always valid, for every tracker. Nothing
+- **The field is optional.** `{}` is always valid, for every tracker. Nothing
   is ever required at log time — this is the app's first principle and the
   server must not undermine it.
+
+The client never renders a save or cancel control on the capture sheet. For
+`CHOICE` and `BOOL` the pick itself commits and closes; for `NUMBER` and `TEXT`
+the keyboard's return key commits, and dismissing the sheet commits whatever was
+typed rather than discarding it.
 
 **Deleting a field from a tracker does not touch logged events.** Their `values`
 keep the orphaned key; the client simply stops rendering it. Rewriting history
