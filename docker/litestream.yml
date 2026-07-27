@@ -4,9 +4,22 @@ dbs:
     replicas:
       - type: s3
         bucket: ${LITESTREAM_REPLICA_BUCKET}
-        path: ${LITESTREAM_REPLICA_PATH:-db}
+        # HARDCODED, and it must stay that way.
+        #
+        # This was `${LITESTREAM_REPLICA_PATH:-db}`. Litestream expands only
+        # plain ${VAR} — it does NOT understand `:-default` — so the whole
+        # token resolved to an EMPTY path and this database replicated to the
+        # bucket root. savethisread shares that bucket and has the identical
+        # bug, so both were writing to the same prefix.
+        #
+        # Writes did not collide (each database gets its own generation id),
+        # but RESTORE would have: `litestream restore` takes the newest
+        # generation under its path, so restoring TickIt could have pulled
+        # savethisread's database into tickit.db — a wrong-data recovery at the
+        # exact moment backups matter. Not worth making configurable.
+        path: tickit
         endpoint: ${LITESTREAM_REPLICA_ENDPOINT}
-        region: ${LITESTREAM_REPLICA_REGION:-auto}
+        region: auto
         access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
         secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
         force-path-style: true
