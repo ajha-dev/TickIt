@@ -11,7 +11,7 @@ import { UndoToast, type ToastState } from '../components/UndoToast.tsx'
 import { safeColour } from '../lib/colours.ts'
 import { useGridReorder } from '../lib/gridReorder.ts'
 import { hapticLog, hapticStop, hapticUndo } from '../lib/haptics.ts'
-import { isPending } from '../lib/outbox.ts'
+import { isPending, useOutbox } from '../lib/outbox.ts'
 import {
   useCaptureValues,
   useCountSpan,
@@ -83,13 +83,55 @@ export function Home({
   const all = useMemo(() => trackersQuery.data ?? [], [trackersQuery.data])
   const trackers = useMemo(() => all.filter((t) => t.archivedAt === null), [all])
   const archived = useMemo(() => all.filter((t) => t.archivedAt !== null), [all])
-  const running = runningQuery.data ?? []
 
   const trackerById = useMemo(() => {
     const map = new Map<string, Tracker>()
     for (const t of all) map.set(t.id, t)
     return map
   }, [all])
+
+  /**
+   * What is running, from both places it can be known.
+   *
+   * The server's list is the authority for anything that reached the Pi. A span
+   * started with no signal reached nothing, so it lives only in the outbox
+   * queue — and the optimistic pin the mutation made died when the app was
+   * closed. Merging the queue's reconstruction back in is what keeps the card
+   * on screen across a restart instead of silently dropping a session that is
+   * still being timed.
+   *
+   * Deduped by id, which is safe precisely because the id is minted on this
+   * device and is the id the server stores: the moment the create lands, the
+   * server's row and the queued one are the same event, not two.
+   */
+  const { queuedRunning } = useOutbox()
+  const running = useMemo(() => {
+    const server = runningQuery.data ?? []
+    const known = new Set(server.map((e) => e.id))
+    const extra = queuedRunning.filter((e) => e.profileId === profileId && !known.has(e.id))
+    if (extra.length === 0) return server
+    return [...server, ...extra]
+      .map((e) =>
+        // A counted span rebuilt from a queue holding no `count` op yet has no
+        // ticks — but it was born holding its opening tap, and only the tracker
+        // says so. Without this the card would render as a plain stopwatch and
+        // lose the count it is actually keeping.
+        e.ticks === null && trackerById.get(e.trackerId)?.counter
+          ? { ...e, ticks: [e.startAt] }
+          : e,
+      )
+      .sort((a, b) => a.startAt - b.startAt)
+  }, [runningQuery.data, queuedRunning, profileId, trackerById])
+
+  /**
+   * The answer is not in yet — no cached list, no queued span, still fetching.
+   *
+   * This is its own state and must not render as "nothing is running". On a
+   * cold start over a tailnet the fetch is visibly slow, and an empty strip
+   * under a header saying `ready` is indistinguishable from a span that has
+   * vanished. Once anything is known — cache, queue, or answer — it is gone.
+   */
+  const checkingRunning = runningQuery.isPending && running.length === 0
 
   const runningTrackerIds = useMemo(() => new Set(running.map((e) => e.trackerId)), [running])
 
@@ -247,7 +289,20 @@ export function Home({
     setEditing((e) => !e)
   }
 
-  const status = editing ? 'edit mode' : running.length > 0 ? `${running.length} running` : 'ready'
+  /**
+   * The header never claims `ready` before it knows. `ready` is a statement
+   * that nothing is running, and until the running query has answered that is
+   * a claim the screen cannot make.
+   */
+  const status = editing
+    ? 'edit mode'
+    : running.length > 0
+      ? `${running.length} running`
+      : checkingRunning
+        ? 'checking'
+        : runningQuery.isError
+          ? 'running spans unknown'
+          : 'ready'
 
   return (
     <div className="relative z-10 flex min-h-dvh flex-col">
@@ -349,6 +404,18 @@ export function Home({
                 onStop={() => onStop(event.id)}
               />
             ))}
+          </section>
+        ) : checkingRunning ? (
+          /* Not a decorative skeleton: it says, in words, that the question is
+             still open. An empty strip during the fetch must not look like an
+             empty strip after it. */
+          <section
+            aria-label="Checking for running spans"
+            aria-busy="true"
+            className="anim-fade flex min-h-[76px] items-center gap-2.5 rounded-tile border border-ink-700 bg-ink-850 px-5 py-4"
+          >
+            <span aria-hidden className="anim-pulse size-[7px] shrink-0 rounded-full bg-lavender" />
+            <p className="stencil">checking for a running span</p>
           </section>
         ) : null}
 

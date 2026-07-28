@@ -175,6 +175,23 @@ export function useDeleteTracker(profileId: string): UseMutationResult<void, Err
 
 /* --------------------------------------------------------------- events -- */
 
+/**
+ * The open spans, according to the server.
+ *
+ * The refetch triggers matter more here than anywhere else in the app, because
+ * this is the query whose staleness reads as "your running span is gone" — so
+ * it is worth being exact about what `refetchOnWindowFocus` actually listens
+ * to. Despite the name it is **not** the `focus` event: React Query v5's focus
+ * manager subscribes to `visibilitychange` and treats `document.visibilityState
+ * !== 'hidden'` as focused. That is precisely the event an installed PWA fires
+ * when it is resumed from the background, and this query carries no
+ * `staleTime`, so it is always stale on resume and always refetches.
+ *
+ * A second `visibilitychange` listener here would therefore be a duplicate
+ * request that looks like a fix. Do not add one. Verified against
+ * @tanstack/query-core 5.101.4 (`focusManager.ts`) and by backgrounding a real
+ * tab, not by dispatching a synthetic event.
+ */
 export function useRunning(profileId: string | undefined): UseQueryResult<Event[]> {
   return useQuery({
     queryKey: keys.running(profileId ?? ''),

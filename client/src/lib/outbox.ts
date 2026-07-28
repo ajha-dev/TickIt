@@ -201,9 +201,24 @@ export interface OutboxSnapshot {
   failures: OutboxFailure[]
   /** Ids of events that exist on this device but not yet on the server. */
   pendingIds: ReadonlySet<string>
+  /**
+   * Spans that are running according to the queue alone.
+   *
+   * A span started with no signal exists nowhere but here: the server has never
+   * heard of it, so `/events/running` cannot return it, and the optimistic pin
+   * the mutation put in the React Query cache dies with the page. Rebuilding it
+   * from the queue on startup is what makes the pinned card survive closing and
+   * reopening the app — otherwise the session is still being timed and the
+   * screen says nothing is running.
+   *
+   * Ids are the client-minted UUIDv7 the server will store, so the merge with
+   * the server's list dedupes by id and the card never appears twice.
+   */
+  queuedRunning: Event[]
 }
 
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>()
+const EMPTY_RUNNING: Event[] = []
 
 let snapshot: OutboxSnapshot = {
   pending: 0,
@@ -211,6 +226,7 @@ let snapshot: OutboxSnapshot = {
   stalled: false,
   failures: [],
   pendingIds: EMPTY_IDS,
+  queuedRunning: EMPTY_RUNNING,
 }
 
 const listeners = new Set<() => void>()
@@ -224,6 +240,48 @@ function setSnapshot(patch: Partial<OutboxSnapshot>): void {
   emit()
 }
 
+/**
+ * Reconstruct the running spans the queue is holding.
+ *
+ * A span counts as running when its `create` is queued and nothing behind it in
+ * the queue ends it: no `stop`, no `delete`, no `patch` that gives it an end
+ * time. That is the same test the server applies to its own rows, run against
+ * the only copy of these events that exists yet.
+ *
+ * `ticks` comes from a queued `count` if the session has been counted since —
+ * that op carries the whole absolute array, so it is the truth. A counted span
+ * with no count queued yet reads `null` here; the Log fills in its opening tap
+ * from the tracker, which is the only place the `counter` flag is known.
+ */
+function queuedRunningFrom(entries: Entry[]): Event[] {
+  const ended = new Set<string>()
+  const ticksById = new Map<string, number[]>()
+  for (const { op } of entries) {
+    if (op.kind === 'stop' || op.kind === 'delete') ended.add(op.id)
+    if (op.kind === 'patch' && typeof op.patch.endAt === 'number') ended.add(op.id)
+    if (op.kind === 'count') ticksById.set(op.id, op.ticks)
+  }
+
+  const running: Event[] = []
+  for (const { op } of entries) {
+    if (op.kind !== 'create' || op.type !== 'INTERVAL' || ended.has(op.id)) continue
+    running.push({
+      id: op.id,
+      trackerId: op.trackerId,
+      profileId: op.profileId,
+      type: 'INTERVAL',
+      startAt: op.startAt,
+      endAt: null,
+      values: op.values,
+      note: op.note,
+      ticks: ticksById.get(op.id) ?? null,
+      createdAt: op.startAt,
+      updatedAt: op.startAt,
+    })
+  }
+  return running.sort((a, b) => a.startAt - b.startAt)
+}
+
 /** Recompute the parts of the snapshot that are derived from the stores. */
 async function refresh(): Promise<void> {
   const [entries, failures] = await Promise.all([
@@ -234,10 +292,14 @@ async function refresh(): Promise<void> {
   for (const entry of entries) {
     if (entry.op.kind === 'create') pendingIds.add(entry.op.id)
   }
+  const queuedRunning = queuedRunningFrom(entries)
   setSnapshot({
     pending: entries.length,
     failures: failures.sort((a, b) => b.failedAt - a.failedAt),
     pendingIds,
+    // A stable empty array keeps the common case — nothing queued — from
+    // handing subscribers a new identity on every refresh.
+    queuedRunning: queuedRunning.length === 0 ? EMPTY_RUNNING : queuedRunning,
   })
 }
 

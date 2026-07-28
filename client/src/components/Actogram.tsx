@@ -27,7 +27,7 @@ import { TRACKER_COLOURS } from '../lib/colours.ts'
 import { fractionOfDay, type DayMark } from '../lib/stats.ts'
 import type { SeriesScheme } from '../lib/series.ts'
 import { formatClock, formatDuration } from '../lib/time.ts'
-import type { Event, Tracker } from '../types.ts'
+import type { Event } from '../types.ts'
 
 /**
  * Hour rules, by wall clock so a DST day's marks stay honest.
@@ -46,20 +46,24 @@ const LABEL_HOURS = [0, 3, 6, 9, 12, 15, 18, 21, 24] as const
 const DAY_BAND = [6, 18] as const
 
 export function Actogram({
-  tracker,
   days,
   columns,
   scheme,
+  nameFor,
   onSelect,
 }: {
-  tracker: Tracker
   /** Local midnights, oldest first — one column each. */
   days: number[]
   columns: Map<number, DayMark[]>
   scheme: SeriesScheme
+  /**
+   * What to call an event out loud. One tracker's chart answers with its name
+   * for everything; the overlay looks the event's tracker up, which is the only
+   * thing keeping a screen reader from hearing fourteen trackers as one.
+   */
+  nameFor: (event: Event) => string
   onSelect: (event: Event) => void
 }) {
-  const isSpan = tracker.type === 'INTERVAL'
   const width = days.length > 0 ? 100 / days.length : 100
 
   // Enough labels to place the eye, never so many that they collide: about one
@@ -91,9 +95,9 @@ export function Actogram({
                   <Mark
                     key={`${mark.event.id}:${mark.day}`}
                     mark={mark}
-                    isSpan={isSpan}
                     colour={scheme.colourOf(scheme.keyFor(mark.event))}
-                    name={tracker.name}
+                    opacity={scheme.opacity}
+                    name={nameFor(mark.event)}
                     onSelect={onSelect}
                   />
                 ))}
@@ -207,17 +211,21 @@ function Bands({ day }: { day: number }) {
 
 function Mark({
   mark,
-  isSpan,
   colour,
+  opacity,
   name,
   onSelect,
 }: {
   mark: DayMark
-  isSpan: boolean
   colour: string
+  /** The scheme's base opacity — below 1 only for the overlay. */
+  opacity: number
   name: string
   onSelect: (event: Event) => void
 }) {
+  // Read off the event, not off a tracker: the overlay draws Spans and Moments
+  // side by side, and `type` is denormalised onto every row for exactly this.
+  const isSpan = mark.event.type === 'INTERVAL'
   const top = fractionOfDay(mark.from, mark.day)
   const bottom = fractionOfDay(mark.to, mark.day)
   const height = Math.max(bottom - top, 0)
@@ -252,7 +260,7 @@ function Mark({
         className="absolute inset-0"
         style={{
           background: colour,
-          opacity: mark.running ? 0.85 : 1,
+          opacity: opacity * (mark.running ? 0.85 : 1),
           borderTopLeftRadius: radius(mark.clippedStart),
           borderTopRightRadius: radius(mark.clippedStart),
           borderBottomLeftRadius: radius(mark.clippedEnd),
@@ -264,14 +272,24 @@ function Mark({
 }
 
 /**
- * The legend. Present whenever a field is splitting the events into two or more
- * series — identity must never rest on colour-matching alone — and absent when
- * the whole chart is one tracker in one colour, where a one-swatch box would
- * only restate the heading.
+ * The legend. Present whenever the colours are splitting the events into two or
+ * more series — identity must never rest on colour-matching alone — and absent
+ * when the whole chart is one tracker in one colour, where a one-swatch box
+ * would only restate the heading.
  *
- * The one thing that takes the legend's place is the note below: a field that
- * has too many options to colour by. Adding a ninth option and watching the
- * chart go monochrome with nothing said would read as a fault in the chart.
+ * Two things can take the legend's place or sit under it, and both exist for
+ * the same reason: a colour that cannot carry a distinction has to say so.
+ *
+ * - A field with more options than the palette has slots is not coloured by at
+ *   all. Adding a ninth option and watching the chart go monochrome with
+ *   nothing said would read as a fault in the chart.
+ * - Under **All**, the colours belong to the trackers and there are more
+ *   trackers than colours, so the shared hues are named. The reader is told
+ *   which pairs the legend, not the chart, is what separates.
+ *
+ * The all-trackers legend carries counts and can run to a dozen rows, so it is
+ * two columns and scrolls inside a capped height — the chart above it is the
+ * thing the screen is for, and the legend must never push it off the viewport.
  */
 export function ActogramLegend({ scheme }: { scheme: SeriesScheme }) {
   if (scheme.declined) {
@@ -285,23 +303,76 @@ export function ActogramLegend({ scheme }: { scheme: SeriesScheme }) {
     )
   }
 
-  if (scheme.series.length === 0 || scheme.field === null) return null
+  if (scheme.series.length === 0 || scheme.title === null) return null
+
+  const counted = scheme.series.some((s) => s.count !== undefined)
 
   return (
     <div className="mt-4 rounded-2xl border border-ink-700 bg-ink-850 p-4">
-      <p className="stencil pb-3">colour · {scheme.field.label}</p>
-      <ul className="flex flex-wrap gap-x-5 gap-y-2.5">
+      <p className="stencil pb-3">colour · {scheme.title}</p>
+      <ul
+        className={
+          counted
+            ? 'grid max-h-[18dvh] grid-cols-2 gap-x-4 gap-y-2 overflow-y-auto overscroll-contain'
+            : 'flex flex-wrap gap-x-5 gap-y-2.5'
+        }
+      >
         {scheme.series.map((s) => (
-          <li key={s.key} className="flex items-center gap-2">
+          <li
+            key={s.key}
+            // A tracker with nothing in this range keeps its row — "logged
+            // nothing" and "not included" are different answers — but recedes,
+            // so the eye reads the rows that are actually on the chart first.
+            className={`flex min-w-0 items-center gap-2 ${s.count === 0 ? 'opacity-45' : ''}`}
+          >
             <span
               aria-hidden
               className="size-2 shrink-0 rounded-full"
               style={{ background: s.colour }}
             />
-            <span className="text-[14px] leading-none">{s.label}</span>
+            <span className="truncate text-[14px] leading-none">{s.label}</span>
+            {s.count === undefined ? null : (
+              <span className="digits ml-auto shrink-0 text-[12px] leading-none text-text-dim">
+                {s.count}
+              </span>
+            )}
           </li>
         ))}
       </ul>
+
+      {scheme.collisions.length > 0 ? <SharedColours groups={scheme.collisions} /> : null}
     </div>
   )
+}
+
+/**
+ * The one quiet line naming trackers that were handed the same colour.
+ *
+ * Same principle as the declined-field note above, and deliberately the same
+ * voice: state the arithmetic, name what is affected, say what to read instead.
+ * The alternative — drawing two trackers in one hue and saying nothing — is the
+ * chart implying a distinction the palette cannot carry.
+ */
+function SharedColours({ groups }: { groups: string[][] }) {
+  const listed = groups.slice(0, 3).map(sentenceList)
+  const rest = groups.length - listed.length
+
+  // Deliberately no arithmetic about how many trackers there are. Colours run
+  // out once a profile passes eight, but two trackers can also have been given
+  // the same colour by hand at any count — so the sentence states the ceiling
+  // and the consequence, and claims nothing it cannot know.
+  return (
+    <p className="mt-3.5 border-t border-ink-700 pt-3 text-[13px] leading-snug text-balance text-text-dim">
+      Sharing a colour: {listed.join(', ')}
+      {rest > 0 ? `, and ${rest} more ${rest === 1 ? 'pair' : 'pairs'}` : ''}. Only{' '}
+      {TRACKER_COLOURS.length} colours stay apart for every reader, so the list above is what tells
+      those trackers apart, not the chart.
+    </p>
+  )
+}
+
+/** "Nap and Walk", "Nap, Walk and Run". */
+function sentenceList(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? ''
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }

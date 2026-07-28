@@ -61,6 +61,18 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
   const [editing, setEditing] = useState<Event | null>(null)
   const [pickingDay, setPickingDay] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /**
+   * Whether archived trackers' events are on screen. Deliberately component
+   * state and nothing more: a switch that hides part of the log and then
+   * silently remembers itself across sessions is how you end up mistrusting the
+   * log. Leaving the screen puts it back to hidden, which is the state the
+   * count in the header always describes.
+   */
+  const [showArchived, setShowArchived] = useState(false)
+  // Switching profile is a different set of trackers and a different set of
+  // archives; carrying the reveal across would be answering a question nobody
+  // asked in this context.
+  useEffect(() => setShowArchived(false), [profileId])
 
   const trackerById = useMemo(() => {
     const map = new Map<string, Tracker>()
@@ -103,6 +115,34 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
     }
     return out.sort((a, b) => b.startAt - a.startAt)
   }, [eventsQuery.data, runningQuery.data, dayStart, dayEnd])
+
+  /**
+   * Archiving a tracker is a statement that it is done with, and the Log grid
+   * already honours it. The Timeline honours it too — otherwise a tracker you
+   * deliberately put away goes on filling the screen it was put away from.
+   *
+   * An event whose tracker is *missing* is not the same thing and is not
+   * hidden: deletion cascades its events away, so an unknown tracker id here
+   * means the tracker list has not loaded yet, and hiding rows on that basis
+   * would make the day flicker.
+   */
+  const isArchived = useCallback(
+    (event: Event) => trackerById.get(event.trackerId)?.archivedAt != null,
+    [trackerById],
+  )
+
+  const archivedCount = useMemo(() => events.filter(isArchived).length, [events, isArchived])
+
+  /**
+   * Revealed events keep their place in the day rather than collecting at the
+   * bottom: the point of a timeline is when things happened, and a set-aside
+   * tracker still happened at the time it happened. Dimming, not position, is
+   * what says "archived".
+   */
+  const shown = useMemo(
+    () => (showArchived ? events : events.filter((e) => !isArchived(e))),
+    [events, showArchived, isArchived],
+  )
 
   const truncated = (eventsQuery.data?.length ?? 0) >= LIMIT
 
@@ -152,7 +192,9 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
         // have happened. A future date is still reachable through the picker,
         // because an event can be logged ahead of itself.
         canGoForward={day < today}
-        count={events.length}
+        count={shown.length}
+        archivedCount={archivedCount}
+        archivedShown={showArchived}
         loading={eventsQuery.isFetching}
         onOpenCalendar={() => setPickingDay(true)}
       />
@@ -174,8 +216,14 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
               Try again
             </button>
           </div>
-        ) : events.length === 0 ? (
-          <EmptyDay day={day} isFuture={isFuture} profileName={profile.name} />
+        ) : shown.length === 0 ? (
+          <EmptyDay
+            day={day}
+            isFuture={isFuture}
+            profileName={profile.name}
+            archivedCount={archivedCount}
+            onShowArchived={() => setShowArchived(true)}
+          />
         ) : (
           <>
             {truncated ? (
@@ -185,27 +233,48 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
             ) : null}
 
             <div>
-              {events.map((event) => (
-                <EventRow
-                  key={event.id}
-                  event={event}
-                  tracker={trackerById.get(event.trackerId)}
-                  onOpen={() => openEvent(event)}
-                  above={
-                    event.startAt < dayStart
-                      ? `started ${formatDayHeading(event.startAt).toLowerCase()}`
-                      : undefined
-                  }
-                  below={
-                    event.type === 'INTERVAL' && event.endAt === null
-                      ? 'still running'
-                      : event.endAt !== null && event.endAt >= dayEnd
-                        ? `continues into ${dayWord(dayEnd)}`
+              {shown.map((event) => {
+                const archived = isArchived(event)
+                const row = (
+                  <EventRow
+                    key={event.id}
+                    event={event}
+                    tracker={trackerById.get(event.trackerId)}
+                    onOpen={() => openEvent(event)}
+                    above={
+                      event.startAt < dayStart
+                        ? `started ${formatDayHeading(event.startAt).toLowerCase()}`
                         : undefined
-                  }
-                />
-              ))}
+                    }
+                    below={
+                      event.type === 'INTERVAL' && event.endAt === null
+                        ? 'still running'
+                        : event.endAt !== null && event.endAt >= dayEnd
+                          ? `continues into ${dayWord(dayEnd)}`
+                          : undefined
+                    }
+                  />
+                )
+                // Dimmed, not restyled: it is the same row, read as set aside.
+                // The group label is what carries that to a screen reader,
+                // which cannot see opacity.
+                return archived ? (
+                  <div key={event.id} role="group" aria-label="Archived tracker" className="opacity-45">
+                    {row}
+                  </div>
+                ) : (
+                  row
+                )
+              })}
             </div>
+
+            {archivedCount > 0 ? (
+              <ArchivedToggle
+                count={archivedCount}
+                shown={showArchived}
+                onToggle={() => setShowArchived((v) => !v)}
+              />
+            ) : null}
           </>
         )}
       </main>
@@ -247,13 +316,19 @@ function DayPicker({
   onChange,
   canGoForward,
   count,
+  archivedCount,
+  archivedShown,
   loading,
   onOpenCalendar,
 }: {
   day: number
   onChange: (next: number) => void
   canGoForward: boolean
+  /** How many rows are on screen — never how many exist. */
   count: number
+  /** How many of the day's entries belong to archived trackers. */
+  archivedCount: number
+  archivedShown: boolean
   loading: boolean
   onOpenCalendar: () => void
 }) {
@@ -292,8 +367,23 @@ function DayPicker({
         <Arrow direction="forward" onClick={() => onChange(addDays(day, 1))} disabled={!canGoForward} />
       </div>
 
+      {/* The count describes the *list*, never a total the list disagrees with.
+          When entries are being held back it says how many, so a short day is
+          never mistaken for a lost one. */}
       <p className="stencil mt-0.5 text-center">
-        {loading ? 'loading' : count === 0 ? 'nothing logged' : `${count} ${count === 1 ? 'entry' : 'entries'}`}
+        {loading
+          ? 'loading'
+          : count === 0
+            ? archivedCount === 0
+              ? 'nothing logged'
+              : `nothing shown · ${archivedCount} archived`
+            : `${count} ${count === 1 ? 'entry' : 'entries'}${
+                archivedCount === 0
+                  ? ''
+                  : archivedShown
+                    ? ` · incl. ${archivedCount} archived`
+                    : ` · ${archivedCount} archived`
+              }`}
       </p>
     </div>
   )
@@ -334,19 +424,79 @@ function Arrow({
 }
 
 /**
- * An empty day is two different things. A past one is a day nothing happened
+ * The one control for archived rows, and deliberately the quietest thing under
+ * the list: it is not an action on the log, it is a statement about how much of
+ * it you are looking at. Sits below the rows so it never comes between two
+ * entries, and names the number so the offer is specific.
+ */
+function ArchivedToggle({
+  count,
+  shown,
+  onToggle,
+}: {
+  count: number
+  shown: boolean
+  onToggle: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={shown}
+      className="tap mt-2 mb-1 flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-ink-700/70 text-[13px] text-text-dim active:bg-ink-850"
+    >
+      <svg viewBox="0 0 24 24" className="size-3.5 shrink-0" fill="none" aria-hidden>
+        <rect x="3.5" y="4.5" width="17" height="4.5" rx="1.6" stroke="currentColor" strokeWidth="1.7" />
+        <path d="M5.5 9v8.5a2 2 0 002 2h9a2 2 0 002-2V9M10 13h4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      </svg>
+      {shown ? `Hide ${count} archived` : `Show ${count} archived`}
+    </button>
+  )
+}
+
+/**
+ * An empty day is three different things. A past one is a day nothing happened
  * on — normal, and worth being able to leave quickly. A future one has not
  * happened yet, and saying "nothing logged" about it would read as data loss.
+ * And a day whose every entry belongs to an archived tracker is not empty at
+ * all: the list is empty because of a choice made here, and the copy has to say
+ * so rather than claim the day was blank.
  */
 function EmptyDay({
   day,
   isFuture,
   profileName,
+  archivedCount,
+  onShowArchived,
 }: {
   day: number
   isFuture: boolean
   profileName: string
+  archivedCount: number
+  onShowArchived: () => void
 }) {
+  if (archivedCount > 0) {
+    return (
+      <div className="rounded-tile hairline bg-ink-850 p-5">
+        <p className="stencil">all archived</p>
+        <p className="mt-2.5 text-[19px] leading-snug tracking-[-0.02em] text-balance">
+          {archivedCount === 1 ? 'The one entry' : `All ${archivedCount} entries`} on {formatDay(day)}{' '}
+          {archivedCount === 1 ? 'belongs' : 'belong'} to archived trackers.
+        </p>
+        <p className="mt-2.5 text-[15px] leading-snug text-text-dim">
+          Nothing has been lost — the day is hidden, not blank.
+        </p>
+        <button
+          type="button"
+          onClick={onShowArchived}
+          className="tap mt-4 h-12 w-full rounded-xl border border-ink-600 bg-ink-800 text-[15px]"
+        >
+          Show {archivedCount} archived
+        </button>
+      </div>
+    )
+  }
+
   if (isFuture) {
     return (
       <div className="rounded-tile hairline bg-ink-850 p-5">

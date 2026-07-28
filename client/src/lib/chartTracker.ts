@@ -1,5 +1,5 @@
 /**
- * Which tracker the Dashboard opens on.
+ * What the Dashboard opens on: one tracker, or all of them.
  *
  * Same reasoning as `profile.ts`, one level down: you come back to the chart to
  * watch the same thing you were watching yesterday. Re-picking it on every
@@ -10,6 +10,11 @@
  * silently reset. Stored as one small map rather than a key per profile so
  * removing a profile never leaves orphaned keys behind.
  *
+ * "All" is a remembered choice like any other, stored under a sentinel that no
+ * id can collide with (`ALL` contains a `*`; every id is a uuidv7). It is the
+ * one selection that cannot dangle: there is no row behind it to delete, so it
+ * survives the tracker list changing underneath it entirely.
+ *
  * Every access is wrapped: localStorage throws in private mode on some
  * browsers, and a storage failure must never break a screen.
  */
@@ -19,6 +24,9 @@ import { useCallback, useState } from 'react'
 import type { Tracker } from '../types.ts'
 
 const KEY = 'tickit.chartTrackerByProfile'
+
+/** The stored value meaning "every non-archived tracker at once". */
+export const ALL = '*all'
 
 type Remembered = Record<string, string>
 
@@ -45,28 +53,43 @@ function writeAll(next: Remembered): void {
 }
 
 export interface ChartTrackerSelection {
-  /** The tracker to chart, or null when the profile has none. */
+  /** The overlay is selected: chart `active`, not `tracker`. */
+  all: boolean
+  /** The tracker to chart. Null under "All", and when the profile has none. */
   tracker: Tracker | null
   /**
-   * What the picker offers: the active trackers, plus the remembered one even
-   * if archived. Archiving hides a tracker from the home grid, it does not
-   * erase its history, so a chart left open on one stays open.
+   * The non-archived trackers — what "All" draws, and what the picker offers
+   * below it. Archiving hides a tracker from the home grid and now also from
+   * the overlay; it does not erase its history, which is why `selectable` still
+   * includes a remembered archived tracker so a chart left open on one stays
+   * open.
    */
+  active: Tracker[]
+  /** What the picker lists: `active`, plus the remembered tracker if archived. */
   selectable: Tracker[]
+  /** Pass a tracker id, or `ALL`. */
   select: (id: string) => void
 }
 
 /**
- * Resolves the remembered id against the trackers that actually exist. One that
- * has since been deleted falls back to the first available rather than leaving
- * the screen blank.
+ * Resolves the remembered choice against the trackers that actually exist. A
+ * tracker that has since been deleted falls back to the first available rather
+ * than leaving the screen blank; `ALL` never needs that fallback.
  */
 export function useChartTracker(profileId: string, trackers: Tracker[]): ChartTrackerSelection {
   const [remembered, setRemembered] = useState<Remembered>(readAll)
 
   const rememberedId = remembered[profileId]
+  const active = trackers.filter((t) => t.archivedAt === null)
   const selectable = trackers.filter((t) => t.archivedAt === null || t.id === rememberedId)
-  const tracker = selectable.find((t) => t.id === rememberedId) ?? selectable[0] ?? null
+
+  // "All" over an empty profile is not a chart, it is an empty grid with a
+  // legend of nothing — so it resolves to the same "no trackers" state a
+  // dangling id does, and the screen says so.
+  const all = rememberedId === ALL && selectable.length > 0
+  const tracker = all
+    ? null
+    : (selectable.find((t) => t.id === rememberedId) ?? selectable[0] ?? null)
 
   // Only an explicit choice is persisted. The fallback above is resolved fresh
   // each render rather than written back, so a tracker list that is momentarily
@@ -82,5 +105,5 @@ export function useChartTracker(profileId: string, trackers: Tracker[]): ChartTr
     [profileId],
   )
 
-  return { tracker, selectable, select }
+  return { all, tracker, active, selectable, select }
 }
