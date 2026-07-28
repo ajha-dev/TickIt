@@ -41,6 +41,17 @@ export function EventRow({
   const running = isSpan && event.endAt === null
   const wasEdited = event.updatedAt !== event.createdAt
 
+  const count = event.ticks?.length ?? null
+  /**
+   * A span that ended where it started took no time, and `formatDuration(0)`
+   * answers "0s" — which is a claim about something that did happen, and a
+   * false one. One kick is an instant, not a zero-length session.
+   *
+   * Suppressed for *any* such span, not only a counted one: an end dragged back
+   * onto the start in the edit sheet has exactly the same problem.
+   */
+  const instantaneous = event.endAt === event.startAt
+
   return (
     <button
       type="button"
@@ -67,7 +78,10 @@ export function EventRow({
           }`}
           style={{
             background: colour,
-            height: isSpan ? 20 : 9,
+            // Length on the rail means length in time, so a span with no length
+            // draws as a dot — the instant it actually is — rather than a
+            // capsule claiming twenty pixels of duration it never had.
+            height: isSpan && !instantaneous ? 20 : 9,
             opacity: orphaned ? 0.45 : 1,
             boxShadow: orphaned ? 'none' : `0 0 12px ${colour}`,
           }}
@@ -90,10 +104,33 @@ export function EventRow({
           </span>
 
           {running ? (
-            <RunningReadout startAt={event.startAt} colour={colour} />
-          ) : isSpan && event.endAt !== null ? (
-            <span className="digits shrink-0 text-[13px] text-text-dim">
-              {formatDuration(event.endAt - event.startAt)}
+            <RunningReadout startAt={event.startAt} colour={colour} count={count} />
+          ) : count !== null || (isSpan && event.endAt !== null && !instantaneous) ? (
+            /* "×12 · 4m 12s" — the count first, because it is what the session
+               was about, and the duration only when there is one. */
+            <span
+              className="digits shrink-0 text-[13px] text-text-dim"
+              aria-label={
+                count !== null
+                  ? `${count} ${count === 1 ? 'count' : 'counts'}${
+                      isSpan && event.endAt !== null && !instantaneous
+                        ? `, ${formatDuration(event.endAt - event.startAt)}`
+                        : ''
+                    }`
+                  : undefined
+              }
+            >
+              {count !== null ? <span aria-hidden>×{count}</span> : null}
+              {count !== null && isSpan && event.endAt !== null && !instantaneous ? (
+                <span aria-hidden className="opacity-55">
+                  {' · '}
+                </span>
+              ) : null}
+              {isSpan && event.endAt !== null && !instantaneous ? (
+                <span aria-hidden={count !== null}>
+                  {formatDuration(event.endAt - event.startAt)}
+                </span>
+              ) : null}
             </span>
           ) : null}
         </span>
@@ -116,15 +153,25 @@ export function EventRow({
 }
 
 /** Only running rows tick, so only running rows subscribe to the clock. */
-function RunningReadout({ startAt, colour }: { startAt: number; colour: string }) {
+function RunningReadout({
+  startAt,
+  colour,
+  count,
+}: {
+  startAt: number
+  colour: string
+  /** Non-null on a counted span — shown ahead of the clock, as it is elsewhere. */
+  count: number | null
+}) {
   const elapsed = useElapsed(startAt)
   return (
     <span
       className="digits shrink-0 text-[13px] tracking-[-0.02em]"
       style={{ color: colour }}
-      aria-label={`Running for ${formatDuration(elapsed)}`}
+      aria-label={`${count !== null ? `${count} so far, ` : ''}running for ${formatDuration(elapsed)}`}
     >
-      {formatStopwatch(elapsed)}
+      {count !== null ? <span aria-hidden>×{count} · </span> : null}
+      <span aria-hidden>{formatStopwatch(elapsed)}</span>
     </span>
   )
 }

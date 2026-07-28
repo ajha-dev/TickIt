@@ -98,8 +98,24 @@ export type OutboxOp =
     })
   | (OpBase & { kind: 'stop'; endAt: number })
   | (OpBase & {
+      /**
+       * The taps of a counted span, **absolute**. Because it is the whole array
+       * rather than an increment, replaying it is idempotent for free — three
+       * sends of the same op leave the same count — and the same op serves both
+       * incrementing and undoing.
+       */
+      kind: 'count'
+      ticks: number[]
+    })
+  | (OpBase & {
       kind: 'patch'
-      patch: { startAt?: number; endAt?: number | null; values?: EventValues; note?: string | null }
+      patch: {
+        startAt?: number
+        endAt?: number | null
+        values?: EventValues
+        note?: string | null
+        ticks?: number[]
+      }
     })
   | (OpBase & { kind: 'delete' })
 
@@ -291,6 +307,47 @@ export async function enqueue(op: OutboxOp, tappedAt: number = Date.now()): Prom
 }
 
 /**
+ * Append — or *replace* — a counted span's taps.
+ *
+ * Forty kicks logged with no signal must not become forty queued requests and
+ * forty round trips on reconnect. The op is an absolute set, so a newer array
+ * wholly supersedes an older queued one for the same event: a six-tap offline
+ * session drains as three entries — create, one merged count, stop — rather
+ * than eight.
+ *
+ * The merged entry **keeps its original key**. The key is the queue's sort
+ * order, and holding it is what keeps the count behind its own `create` and in
+ * front of any later `stop`. Minting a new one would let a count outlive the
+ * stop it preceded.
+ *
+ * An entry that is mid-flight is never rewritten — it may already have reached
+ * the server — so a new entry is appended instead. The newer array supersedes
+ * it on arrival regardless of which of the two lands last, because the later
+ * key is sent later.
+ */
+export async function enqueueCount(op: Extract<OutboxOp, { kind: 'count' }>): Promise<void> {
+  const existing = (await readAll<Entry>(QUEUE)).find(
+    (e) => e.op.kind === 'count' && e.op.id === op.id && e.key !== inFlightKey,
+  )
+  if (existing) {
+    await put(QUEUE, {
+      ...existing,
+      op,
+      tappedAt: Date.now(),
+      // The superseding array has never been rejected, so it must not inherit
+      // the backoff of the array it replaces.
+      attempts: 0,
+      nextAttemptAt: 0,
+      lastError: null,
+    } satisfies Entry)
+    await refresh()
+    registerBackgroundSync()
+    return
+  }
+  await enqueue(op)
+}
+
+/**
  * Undo for something that never left the device.
  *
  * If the event's `create` is still queued, the whole thing — and anything
@@ -353,6 +410,8 @@ function send(op: OutboxOp): Promise<Event | null> {
       })
     case 'stop':
       return api.stopEvent(op.id, op.endAt)
+    case 'count':
+      return api.countEvent(op.id, op.ticks)
     case 'patch':
       return api.updateEvent(op.id, op.patch)
     case 'delete':
@@ -388,6 +447,19 @@ function classify(op: OutboxOp, error: unknown): Verdict {
     return { kind: 'ok', event: null }
   }
 
+  // A count answered 404 is already handled: the create failed permanently and
+  // `fail()` dropped every sibling queued against it, so this entry is the tail
+  // of a write the user has already been told about. Reporting it again would
+  // be one lost log announced twice.
+  //
+  // ALREADY_STOPPED on a count is the opposite, and is the reason this is not
+  // written the way `stop` is: the tap did **not** land. The span closed at its
+  // previous last tick and this one is gone. That is a real loss and belongs in
+  // the failures list where the user can see it.
+  if (op.kind === 'count' && status === 404) {
+    return { kind: 'ok', event: null }
+  }
+
   return { kind: 'permanent', code }
 }
 
@@ -420,6 +492,17 @@ function applied(op: OutboxOp, event: Event | null): void {
       if (event.type !== 'INTERVAL' || event.endAt !== null) return rest
       return [...rest, event].sort((a, b) => a.startAt - b.startAt)
     })
+  }
+
+  // The server is the authority on a counted span's ticks — it validates and
+  // may clamp them — so its answer, not the optimistic array, is what the
+  // running card ends up showing.
+  if (op.kind === 'count' && event) {
+    qc.setQueryData<Event[]>(runningKey, (previous) =>
+      previous
+        ? previous.map((e) => (e.id === event.id ? { ...e, ticks: event.ticks } : e))
+        : previous,
+    )
   }
 
   if (op.kind === 'stop' || op.kind === 'delete') {

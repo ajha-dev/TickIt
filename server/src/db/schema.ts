@@ -42,6 +42,16 @@ export const trackers = sqliteTable(
       .$type<FieldDef[]>()
       .notNull()
       .default(sql`'[]'`),
+    /**
+     * Does this tracker count taps within a span? Meaningful only when
+     * `type = 'INTERVAL'`; always false on an INSTANT, and the route rejects
+     * setting it there.
+     *
+     * Read in exactly ONE place — `POST /api/events`, to decide whether a new
+     * event starts with ticks. Every later branch keys off `event.ticks !== null`
+     * instead, so toggling this mid-session cannot break a running span.
+     */
+    counter: integer('counter', { mode: 'boolean' }).notNull().default(false),
     archivedAt: integer('archived_at'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
@@ -67,6 +77,17 @@ export const events = sqliteTable(
       .notNull()
       .default(sql`'{}'`),
     note: text('note'),
+    /**
+     * Tap timestamps of a COUNTED span, ascending, first tap === `startAt`.
+     * `null` on everything that is not a counted span — which is every event
+     * that existed before this column.
+     *
+     * The count is never stored: it is `ticks.length`. A total and the
+     * timestamps it came from must not be able to disagree.
+     *
+     * `ticks !== null` is the single test for "this event is counted".
+     */
+    ticks: text('ticks', { mode: 'json' }).$type<number[]>(),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },

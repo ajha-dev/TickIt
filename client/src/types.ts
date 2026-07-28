@@ -43,6 +43,12 @@ export interface Tracker {
   icon: string
   sortOrder: number
   fields: FieldDef[]
+  /**
+   * Count taps during a span. Meaningful only when `type === 'INTERVAL'`.
+   * A counted span runs from its first tap to its last — the stop time
+   * contributes nothing.
+   */
+  counter: boolean
   archivedAt: number | null
   createdAt: number
   updatedAt: number
@@ -57,6 +63,14 @@ export interface Event {
   endAt: number | null
   values: Record<string, string | number | boolean>
   note: string | null
+  /**
+   * Tap timestamps, ascending, for a counted span. `null` on everything that
+   * is not one — which is every event that existed before counters.
+   *
+   * **The count is `ticks.length`.** There is no count field, so a total and
+   * its timestamps can never disagree about the same fact.
+   */
+  ticks: number[] | null
   createdAt: number
   updatedAt: number
 }

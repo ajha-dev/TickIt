@@ -23,6 +23,7 @@
  * hour rules stay in step instead of drifting apart.
  */
 
+import { TRACKER_COLOURS } from '../lib/colours.ts'
 import { fractionOfDay, type DayMark } from '../lib/stats.ts'
 import type { SeriesScheme } from '../lib/series.ts'
 import { formatClock, formatDuration } from '../lib/time.ts'
@@ -267,8 +268,23 @@ function Mark({
  * series — identity must never rest on colour-matching alone — and absent when
  * the whole chart is one tracker in one colour, where a one-swatch box would
  * only restate the heading.
+ *
+ * The one thing that takes the legend's place is the note below: a field that
+ * has too many options to colour by. Adding a ninth option and watching the
+ * chart go monochrome with nothing said would read as a fault in the chart.
  */
 export function ActogramLegend({ scheme }: { scheme: SeriesScheme }) {
+  if (scheme.declined) {
+    const { field, categories } = scheme.declined
+    return (
+      <p className="mt-4 text-[13px] leading-snug text-balance text-text-dim">
+        Not colouring by {field.label}: {categories} options is more than the{' '}
+        {TRACKER_COLOURS.length} colours that stay apart for every reader, so every mark is in
+        this tracker’s own colour.
+      </p>
+    )
+  }
+
   if (scheme.series.length === 0 || scheme.field === null) return null
 
   return (

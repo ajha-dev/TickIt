@@ -150,6 +150,8 @@ export function createTracker(input: {
   colour?: string
   icon?: string
   fields?: FieldDefInput[]
+  /** INTERVAL only — 400 COUNTER_NOT_ALLOWED on an INSTANT tracker. */
+  counter?: boolean
 }): Promise<Tracker> {
   return request('/trackers', { method: 'POST', body: input })
 }
@@ -166,6 +168,9 @@ export function updateTracker(
      *  place; fields without one are created. Omitted fields are removed —
      *  which does not touch values already logged against them. */
     fields?: FieldDefInput[]
+    /** Configuration, not identity — unlike `type` this may change after
+     *  creation. Turning it off leaves existing counts intact. */
+    counter?: boolean
   },
 ): Promise<Tracker> {
   return request(`/trackers/${id}`, { method: 'PATCH', body: patch })
@@ -219,6 +224,21 @@ export function stopEvent(id: string, endAt?: number): Promise<Event> {
   })
 }
 
+/**
+ * Records the taps of a counted span — **the whole array, absolutely**.
+ *
+ * Not a delta: a retried `count += 1` after an ambiguous response double-counts,
+ * whereas sending the array is idempotent under replay. The same operation
+ * therefore serves increment and undo, so there is no separate undo path and no
+ * delta arithmetic anywhere.
+ *
+ * Does not mark the event edited — counting is normal operation, not a
+ * correction, exactly as stopping a span is.
+ */
+export function countEvent(id: string, ticks: number[]): Promise<Event> {
+  return request(`/events/${id}/count`, { method: 'POST', body: { ticks } })
+}
+
 export function updateEvent(
   id: string,
   patch: {
@@ -226,6 +246,8 @@ export function updateEvent(
     endAt?: number | null
     values?: Record<string, string | number | boolean>
     note?: string | null
+    /** Unlike the count endpoint, this DOES mark the event edited. */
+    ticks?: number[]
   },
 ): Promise<Event> {
   return request(`/events/${id}`, { method: 'PATCH', body: patch })

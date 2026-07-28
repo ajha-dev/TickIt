@@ -110,6 +110,29 @@ check('DOES fire again after a new event moves the anchor', () => {
   assert.equal(shouldFire(input({ now: ist(16, 0), anchor: newAnchor, lastFiredAt })), 'FIRE')
 })
 
+check('a tap inside a RUNNING counted span counts as activity', () => {
+  // The bug the counted-span design surfaced. A running span has `end_at IS
+  // NULL`, so an anchor of `max(coalesce(end_at, start_at))` sticks at the
+  // START and never advances — a long counted session would be told "nothing
+  // logged for 3h" while the user was actively tapping.
+  //
+  // The anchor itself is resolved in SQL (`sweep.ts`), so only the consequence
+  // is reachable from here; the expression is verified against real rows with
+  // sqlite. What this pins down is the rule the SQL exists to serve: each tap
+  // IS activity, so the anchor is the LAST TICK, not the start.
+  const startedAt = ist(9, 0)
+  const lastTap = ist(11, 59)
+  const now = ist(12, 0) // two hours in, tapping a minute ago
+
+  // What the old expression produced — a mid-session notification.
+  assert.equal(shouldFire(input({ now, anchor: startedAt })), 'FIRE')
+  // What the last tick produces — correctly quiet.
+  assert.equal(shouldFire(input({ now, anchor: lastTap })), 'NOT_IDLE')
+
+  // And once the taps really do stop, it still fires on schedule.
+  assert.equal(shouldFire(input({ now: lastTap + 3 * HOUR, anchor: lastTap })), 'FIRE')
+})
+
 check('does NOT fire inside a quiet window', () => {
   // Due at 03:10 local, inside 01:00–07:00. Held silent.
   const now = ist(3, 10)

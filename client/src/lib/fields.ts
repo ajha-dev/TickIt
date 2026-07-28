@@ -17,7 +17,7 @@ import type { FieldDef, FieldDefInput, FieldKind } from '../types.ts'
 export const MAX_FIELDS = 1
 export const MAX_LABEL = 24
 export const MIN_OPTIONS = 2
-export const MAX_OPTIONS = 6
+export const MAX_OPTIONS = 10
 export const MAX_OPTION_LENGTH = 16
 export const MAX_UNIT = 8
 
@@ -80,15 +80,6 @@ export function withKind(draft: FieldDraft, kind: FieldKind): FieldDraft {
     unit: kind === 'NUMBER' ? draft.unit : '',
     options: kind === 'CHOICE' ? (draft.options.length > 0 ? draft.options : ['', '']) : [],
   }
-}
-
-export function moveDraft(drafts: FieldDraft[], from: number, to: number): FieldDraft[] {
-  if (to < 0 || to >= drafts.length || from === to) return drafts
-  const next = [...drafts]
-  const [moved] = next.splice(from, 1)
-  if (!moved) return drafts
-  next.splice(to, 0, moved)
-  return next
 }
 
 /** Per-field problem text, or null when the field is fine. Order matters: the

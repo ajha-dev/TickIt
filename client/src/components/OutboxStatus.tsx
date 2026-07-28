@@ -120,9 +120,30 @@ function describe(failure: OutboxFailure): string {
   const what =
     op.kind === 'create'
       ? `${op.label} at ${clock(op.startAt)}`
-      : `${op.label} on an event`
+      : op.kind === 'count'
+        ? `${op.label} — ${op.ticks.length} counts`
+        : `${op.label} on an event`
 
   switch (code) {
+    // A count that lost a race with Stop. The span closed at its previous last
+    // tick and the tap is gone, which is a real loss — not a replay that
+    // already landed — so it is named rather than swallowed.
+    case 'ALREADY_STOPPED':
+      return `${what} — the span had already been stopped, so the last counts were not recorded.`
+    case 'NOT_COUNTED':
+      return `${what} — that span does not have a counter.`
+    case 'TICK_BEFORE_START':
+      return `${what} — a count was timed before the span began.`
+    case 'TICKS_NOT_ASCENDING':
+      return `${what} — the counts were out of order.`
+    case 'TICKS_REQUIRED':
+      return `${what} — a counted span cannot have no counts at all.`
+    case 'TOO_MANY_TICKS':
+      return `${what} — that is more counts than one span can hold.`
+    case 'BAD_TICKS':
+      return `${what} — the server could not read the counts.`
+    case 'COUNTER_NOT_ALLOWED':
+      return `${what} — only a Span can count taps.`
     case 'TRACKER_NOT_FOUND':
       return `${what} — its tracker was deleted.`
     case 'ALREADY_RUNNING':

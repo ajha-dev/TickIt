@@ -5,11 +5,13 @@ import { events, trackers, type EventRow } from '../db/schema.js'
 import { newId } from '../lib/ids.js'
 import { readJson } from '../lib/http.js'
 import {
+  countEventSchema,
   createEventSchema,
   listEventsQuerySchema,
   patchEventSchema,
   runningEventsQuerySchema,
   stopEventSchema,
+  ticksStartError,
   validateEventValues,
   zodMessage,
 } from '../lib/validate.js'
@@ -107,15 +109,26 @@ eventRoutes.post('/events', async (c) => {
     }
 
     const now = Date.now()
+    const at = startAt ?? now
     const row: EventRow = {
       id: id ?? newId(),
       trackerId: tracker.id,
       profileId: tracker.profileId,
       type: tracker.type,
-      startAt: startAt ?? now,
+      startAt: at,
       endAt: null,
       values: values ?? {},
       note: note ?? null,
+      // THE ONLY PLACE `tracker.counter` IS READ. A counted span starts with its
+      // first tap already recorded — starting one IS the first tap — so `ticks`
+      // is server-derived and the invariant "first tick === startAt" holds in a
+      // single place. Everything downstream keys off `ticks !== null` instead,
+      // so turning the tracker's toggle off mid-session cannot break the span
+      // that is already running.
+      //
+      // The replay branch above returns early, so a retried create never
+      // rewrites the ticks a session has since accumulated.
+      ticks: tracker.type === 'INTERVAL' && tracker.counter ? [at] : null,
       createdAt: now,
       updatedAt: now,
     }
@@ -144,7 +157,17 @@ eventRoutes.post('/events/:id/stop', async (c) => {
   if (existing.type === 'INSTANT') return c.json({ error: 'NOT_AN_INTERVAL' }, 400)
   if (existing.endAt !== null) return c.json({ error: 'ALREADY_STOPPED' }, 400)
 
-  const endAt = parsed.data.endAt ?? Date.now()
+  // A counted span runs from its FIRST tap to its LAST tap; the stop time
+  // contributes nothing. So the end is the last tick and any `endAt` in the body
+  // is ignored — the server owns the rule, and a stale client must not be able
+  // to disagree with it. A span that was never incremented ends where it began:
+  // zero-length, which the guard below permits (it rejects only `endAt <
+  // startAt`, strictly).
+  //
+  // Keyed on the event's own ticks, never on `tracker.counter`: the toggle may
+  // have been turned off while this span was running.
+  const lastTick = existing.ticks !== null ? existing.ticks.at(-1) : undefined
+  const endAt = lastTick ?? parsed.data.endAt ?? Date.now()
   if (endAt < existing.startAt) return c.json({ error: 'END_BEFORE_START' }, 400)
 
   // Deliberately does NOT touch updatedAt. Stopping is how a Span normally
@@ -152,6 +175,46 @@ eventRoutes.post('/events/:id/stop', async (c) => {
   // drives the client's "edited" marker. Bumping it here would put that marker
   // on every Span ever finished, which makes it meaningless. Only PATCH edits.
   db.update(events).set({ endAt }).where(eq(events.id, id)).run()
+  const row = db.select().from(events).where(eq(events.id, id)).get()
+  return c.json(row)
+})
+
+/**
+ * Record the taps of a counted span.
+ *
+ * The body carries the WHOLE array, absolutely — never a delta. The offline
+ * outbox retries when it cannot tell whether a request landed, and a replayed
+ * `count += 1` double-counts silently with nothing able to detect it afterwards.
+ * An absolute array replays as a no-op. The same operation therefore serves
+ * increment AND undo — undo just sends a shorter array — so there is no separate
+ * undo endpoint and no delta arithmetic anywhere in the system.
+ */
+eventRoutes.post('/events/:id/count', async (c) => {
+  const id = c.req.param('id')
+  const parsed = countEventSchema.safeParse(await readJson(c))
+  if (!parsed.success) return c.json({ error: zodMessage(parsed.error) }, 400)
+
+  const existing = db.select().from(events).where(eq(events.id, id)).get()
+  if (!existing) return c.json({ error: 'NOT_FOUND' }, 404)
+  if (existing.type === 'INSTANT') return c.json({ error: 'NOT_AN_INTERVAL' }, 400)
+  // `ticks === null` is the single test for "not a counted span" — the tracker's
+  // toggle is deliberately not consulted, so flipping it off mid-session leaves
+  // the running span countable, and flipping it on never retro-fits a counter
+  // onto a span that started without one.
+  if (existing.ticks === null) return c.json({ error: 'NOT_COUNTED' }, 400)
+  if (existing.endAt !== null) return c.json({ error: 'ALREADY_STOPPED' }, 400)
+
+  const ticks = parsed.data.ticks
+  const startError = ticksStartError(ticks, existing.startAt)
+  if (startError) return c.json({ error: startError }, 400)
+
+  // Deliberately does NOT touch updatedAt, for exactly the reason
+  // `POST /events/:id/stop` does not: `updatedAt !== createdAt` is the client's
+  // "edited" marker, and counting is how a counted span normally proceeds, not a
+  // correction to it. Counting through a path that bumped it would put the
+  // marker on every counted session ever logged and make it meaningless. Only
+  // PATCH — an edit after the fact — is an edit.
+  db.update(events).set({ ticks }).where(eq(events.id, id)).run()
   const row = db.select().from(events).where(eq(events.id, id)).get()
   return c.json(row)
 })
@@ -175,6 +238,24 @@ eventRoutes.patch('/events/:id', async (c) => {
   // INSTANT — the denormalised `type` and the data would disagree forever.
   if (existing.type === 'INSTANT' && nextEndAt !== null) {
     return c.json({ error: 'NOT_AN_INTERVAL' }, 400)
+  }
+
+  // A counter cannot be retro-fitted onto an event that was logged without one:
+  // there are no real tap times to invent, and a made-up one is worse than an
+  // absent count. Keyed on the event, not the tracker — see POST /count.
+  if (p.ticks !== undefined && existing.ticks === null) {
+    return c.json({ error: 'NOT_COUNTED' }, 400)
+  }
+  // Checked against `nextStartAt`, not `existing.startAt` — a patch that moves
+  // the start and the ticks together must be judged against the start it is
+  // about to have. The stored ticks are re-checked even when only `startAt`
+  // moves: otherwise a start could be dragged past the span's own first tap and
+  // the invariant "every tick is at or after the start" would break silently,
+  // with nothing left to detect it afterwards.
+  const nextTicks = p.ticks ?? existing.ticks
+  if (nextTicks !== null) {
+    const startError = ticksStartError(nextTicks, nextStartAt)
+    if (startError) return c.json({ error: startError }, 400)
   }
 
   if (p.values !== undefined) {
@@ -207,6 +288,9 @@ eventRoutes.patch('/events/:id', async (c) => {
   if ('endAt' in p) patch.endAt = nextEndAt
   if ('values' in p) patch.values = p.values
   if ('note' in p) patch.note = p.note ?? null
+  // This one DOES bump updatedAt (see the shared `patch` above): editing the
+  // taps after the fact is a correction, which is exactly what the marker means.
+  if (p.ticks !== undefined) patch.ticks = p.ticks
 
   db.update(events).set(patch).where(eq(events.id, id)).run()
   const row = db.select().from(events).where(eq(events.id, id)).get()

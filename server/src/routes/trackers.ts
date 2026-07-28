@@ -64,6 +64,12 @@ trackerRoutes.post('/trackers', async (c) => {
     .get()
   if (!profile) return c.json({ error: 'PROFILE_NOT_FOUND' }, 404)
 
+  // Counting taps only means anything inside a span. A Moment has no duration to
+  // count within, so this is refused loudly rather than stored and ignored.
+  if (parsed.data.counter === true && parsed.data.type === 'INSTANT') {
+    return c.json({ error: 'COUNTER_NOT_ALLOWED' }, 400)
+  }
+
   const now = Date.now()
   const row = {
     id: newId(),
@@ -74,6 +80,7 @@ trackerRoutes.post('/trackers', async (c) => {
     icon: parsed.data.icon ?? DEFAULT_ICON,
     sortOrder: 0,
     fields: resolveFields(parsed.data.fields ?? [], []),
+    counter: parsed.data.counter ?? false,
     archivedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -91,6 +98,11 @@ trackerRoutes.patch('/trackers/:id', async (c) => {
   if (!existing) return c.json({ error: 'NOT_FOUND' }, 404)
 
   const p = parsed.data
+  // `type` is immutable, so the stored row is the only authority on it.
+  if (p.counter === true && existing.type === 'INSTANT') {
+    return c.json({ error: 'COUNTER_NOT_ALLOWED' }, 400)
+  }
+
   const patch: Partial<typeof existing> = { updatedAt: Date.now() }
   if ('name' in p) patch.name = p.name
   if ('colour' in p) patch.colour = p.colour
@@ -98,6 +110,10 @@ trackerRoutes.patch('/trackers/:id', async (c) => {
   if ('sortOrder' in p) patch.sortOrder = p.sortOrder
   if ('archivedAt' in p) patch.archivedAt = p.archivedAt
   if (p.fields !== undefined) patch.fields = resolveFields(p.fields, existing.fields)
+  // Changeable after creation, unlike `type` — it is configuration, not
+  // identity. Events already logged keep their ticks either way; the app does
+  // not rewrite history to match a definition change.
+  if (p.counter !== undefined) patch.counter = p.counter
 
   db.update(trackers).set(patch).where(eq(trackers.id, id)).run()
   const row = db.select().from(trackers).where(eq(trackers.id, id)).get()

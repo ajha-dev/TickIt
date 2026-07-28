@@ -11,9 +11,9 @@ export { shouldFire, shouldFireSchedule } from './rules.js'
 /**
  * One pass over every enabled reminder.
  *
- * Resolves each tracker's anchor in SQL — `max(end_at ?? start_at)` — so a
- * hundred reminders are one query, not a hundred. A reminder whose tracker has
- * no events falls back to the reminder's own `createdAt`.
+ * Resolves each tracker's anchor in SQL — `max(end_at ?? last tick ?? start_at)`
+ * — so a hundred reminders are one query, not a hundred. A reminder whose
+ * tracker has no events falls back to the reminder's own `createdAt`.
  */
 export async function sweepOnce(now: number): Promise<void> {
   const subs = db.select().from(pushSubs).all()
@@ -35,9 +35,22 @@ export async function sweepOnce(now: number): Promise<void> {
       lastFiredAt: reminders.lastFiredAt,
       createdAt: reminders.createdAt,
       trackerName: trackers.name,
+      /**
+       * The tracker's most recent activity.
+       *
+       * The last tick sits between `end_at` and `start_at` deliberately. A
+       * RUNNING span has `end_at IS NULL`, so without it the anchor falls back
+       * to `start_at` and never advances — a two-hour counted session on a
+       * tracker with a 1h idle reminder would fire "nothing logged for 1h"
+       * mid-session, while the user is actively tapping. Each tap IS activity.
+       *
+       * `$[#-1]` is JSON1's address for the last element of an array; it yields
+       * NULL for a NULL or empty `ticks`, so uncounted events fall straight
+       * through to the previous behaviour.
+       */
       lastActivity: sql<
         number | null
-      >`(select max(coalesce(${events.endAt}, ${events.startAt})) from ${events} where ${events.trackerId} = ${reminders.trackerId})`,
+      >`(select max(coalesce(${events.endAt}, json_extract(${events.ticks}, '$[#-1]'), ${events.startAt})) from ${events} where ${events.trackerId} = ${reminders.trackerId})`,
     })
     .from(reminders)
     .innerJoin(trackers, eq(trackers.id, reminders.trackerId))

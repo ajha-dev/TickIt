@@ -10,6 +10,7 @@ import { summariseReminder, useReminders } from '../lib/remindersApi.ts'
 import { FieldEditor } from './FieldEditor.tsx'
 import { ColourPicker, TextField } from './Form.tsx'
 import { ReminderEditor } from './ReminderEditor.tsx'
+import { Toggle } from './ReminderBits.tsx'
 import { Sheet, SheetButton } from './Sheet.tsx'
 import type { Tracker, TrackerType } from '../types.ts'
 
@@ -36,6 +37,8 @@ interface Draft {
   type: TrackerType
   colour: string
   fields: FieldDraft[]
+  /** Span only. Configuration, not identity — editable after creation. */
+  counter: boolean
 }
 
 export function TrackerSheets({
@@ -60,6 +63,7 @@ export function TrackerSheets({
     type: 'INSTANT',
     colour: nextColour([]),
     fields: [],
+    counter: false,
   })
 
   const close = () => onState(null)
@@ -94,6 +98,7 @@ export function TrackerSheets({
         colour: safeColour(editing.colour),
         // toDrafts keeps every existing field id — see lib/fields.ts.
         fields: toDrafts(editing.fields),
+        counter: editing.counter,
       })
     } else {
       setDraft({
@@ -102,6 +107,7 @@ export function TrackerSheets({
         // Cycle the palette, skipping every colour already in this profile.
         colour: nextColour(trackers.map((t) => t.colour)),
         fields: [],
+        counter: false,
       })
     }
   }, [formOpen, editing, trackers])
@@ -123,11 +129,20 @@ export function TrackerSheets({
     const name = draft.name.trim()
     const fields = toPayload(draft.fields)
 
+    // A counter is meaningless on a Moment, and the server rejects it there
+    // (COUNTER_NOT_ALLOWED), so the type decides what is sent — not the toggle,
+    // which may hold a stale true from a type switch made before creating.
+    const type = editing ? editing.type : draft.type
+    const counter = type === 'INTERVAL' && draft.counter
+
     if (editing) {
-      updateTracker.mutate({ id: editing.id, patch: { name, colour: draft.colour, fields } })
+      updateTracker.mutate({
+        id: editing.id,
+        patch: { name, colour: draft.colour, fields, counter },
+      })
     } else {
       hapticLog()
-      createTracker.mutate({ name, type: draft.type, colour: draft.colour, fields })
+      createTracker.mutate({ name, type: draft.type, colour: draft.colour, fields, counter })
     }
     close()
   }
@@ -175,6 +190,20 @@ export function TrackerSheets({
         ) : (
           <TypePicker value={draft.type} onChange={(type) => setDraft((d) => ({ ...d, type }))} />
         )}
+
+        {/* Span only — a Moment has no session to count within. Shown while
+            editing too: unlike `type` this is configuration, not identity, and
+            turning it off leaves every count already logged intact. */}
+        {(editing ? editing.type : draft.type) === 'INTERVAL' ? (
+          <div className="rounded-2xl border border-ink-600 bg-ink-800/60 px-4 py-3">
+            <p className="stencil mb-2">counter</p>
+            <Toggle
+              checked={draft.counter}
+              onChange={(counter) => setDraft((d) => ({ ...d, counter }))}
+              label="Count taps — the span runs from the first count to the last."
+            />
+          </div>
+        ) : null}
 
         <ColourPicker
           value={draft.colour}

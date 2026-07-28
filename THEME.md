@@ -62,6 +62,13 @@ list in order, skipping colours already used in the current profile before
 repeating; reshuffling it puts weakly separated colours next to each other in a
 two-tracker profile.
 
+**Eight is a ceiling, not a starting point.** A CHOICE field may now carry up to
+ten options, which is two more categories than this table can keep apart. The
+Dashboard does **not** wrap the palette to cover them — `seriesScheme()` stops
+colouring by that field altogether and charts the tracker in its own single
+colour, saying so where the legend would have been. Wrapping would hand two
+different answers the same hue and silently undo everything measured above.
+
 None of the five supplied colours appears here, and that is the point of the
 section above: they are UI identity, and they keep those roles untouched. The
 supplied hues are still represented — indigo and violet are the periwinkle and

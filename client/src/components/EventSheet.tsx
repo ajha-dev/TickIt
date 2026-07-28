@@ -88,6 +88,12 @@ export interface EventPatch {
   endAt?: number | null
   values?: Record<string, string | number | boolean>
   note?: string | null
+  /**
+   * A counted span's taps, corrected. Sent as the whole array — and only ever
+   * *shorter* than what is stored, because a tick that was never taken has no
+   * timestamp to invent. See `CountField`.
+   */
+  ticks?: number[]
 }
 
 interface EventSheetProps {
@@ -129,9 +135,45 @@ export function EventSheet({
     ...event.values,
   }))
   const [confirming, setConfirming] = useState(false)
+  // How many of the stored taps survive the edit. Only ever reduced.
+  const [kept, setKept] = useState(() => event.ticks?.length ?? 0)
+  /**
+   * What an untouched End field means, to the millisecond.
+   *
+   * Normally the stored `endAt`, which is what makes re-saving an untouched
+   * event preserve its seconds (see `resolve`). Popping a tick that *was* the
+   * end moves this to the new last tick — the field itself only carries
+   * minutes, so without a baseline the pre-fill would round-trip to the old
+   * value and the correction would never be sent.
+   */
+  const [endBaseline, setEndBaseline] = useState<number | null>(event.endAt)
 
   const nextStart = resolve(start, event.startAt)
-  const nextEnd = isSpan ? resolve(end, event.endAt) : null
+  const nextEnd = isSpan ? resolve(end, endBaseline) : null
+
+  const storedTicks = event.ticks
+  const nextTicks = storedTicks !== null && kept < storedTicks.length
+    ? storedTicks.slice(0, kept)
+    : null
+
+  /**
+   * Drop the most recent tap.
+   *
+   * If the end time on the form is still the tick being removed, move it to the
+   * new last tick rather than leaving a span ending on a count that no longer
+   * exists. Done here, visibly and overridable, rather than left to the server
+   * to fix quietly after saving.
+   */
+  const dropLastTick = () => {
+    if (storedTicks === null || kept <= 1) return
+    const removed = storedTicks[kept - 1]
+    const newLast = storedTicks[kept - 2]
+    setKept(kept - 1)
+    if (removed !== undefined && newLast !== undefined && nextEnd === removed) {
+      setEnd(toLocalParts(newLast))
+      setEndBaseline(newLast)
+    }
+  }
 
   const problem = useMemo(() => {
     if (partsAreEmpty(start)) return 'An event needs a start time.'
@@ -151,11 +193,12 @@ export function EventSheet({
     // endAt is NEVER sent for an INSTANT: the server answers 400 NOT_AN_INTERVAL
     // rather than let a Moment turn into a Span behind its tracker's back.
     if (isSpan && nextEnd !== event.endAt) out.endAt = nextEnd
+    if (nextTicks !== null) out.ticks = nextTicks
     const trimmed = note.trim()
     if (trimmed !== (event.note ?? '')) out.note = trimmed === '' ? null : trimmed
     if (!sameValues(values, event.values)) out.values = values
     return out
-  }, [nextStart, nextEnd, note, values, event, isSpan])
+  }, [nextStart, nextEnd, nextTicks, note, values, event, isSpan])
 
   const dirty = Object.keys(patch).length > 0
   const duration =
@@ -167,7 +210,13 @@ export function EventSheet({
   if (confirming) {
     // Deliberately the *stored* times, not the ones half-typed into the form
     // above: the confirm has to describe the row that is about to disappear.
-    const stored = isSpan && event.endAt !== null ? event.endAt - event.startAt : null
+    // A zero-length span is a real thing that happened at one moment, so it is
+    // described as one. ", 0s long" reads as a bug about a one-tap session.
+    const stored =
+      isSpan && event.endAt !== null && event.endAt !== event.startAt
+        ? event.endAt - event.startAt
+        : null
+    const counts = event.ticks?.length ?? null
 
     return (
       <Sheet
@@ -182,6 +231,7 @@ export function EventSheet({
               {formatDayHeading(event.startAt).toLowerCase()} at{' '}
               <span className="digits">{formatClock(event.startAt)}</span>
             </strong>
+            {counts !== null ? `, ${counts} ${counts === 1 ? 'count' : 'counts'}` : ''}
             {stored !== null ? `, ${formatDuration(stored)} long` : running ? ', still running' : ''}
             . It leaves the database outright — there is no undo and no export.
           </>
@@ -228,11 +278,22 @@ export function EventSheet({
             hint={
               partsAreEmpty(end)
                 ? 'Empty — this span is still running.'
-                : duration !== null
-                  ? `Lasted ${formatDuration(duration)}.`
-                  : undefined
+                : duration === 0
+                  ? 'No length — start and end are the same moment.'
+                  : duration !== null
+                    ? `Lasted ${formatDuration(duration)}.`
+                    : undefined
             }
             onClear={partsAreEmpty(end) ? undefined : () => setEnd(EMPTY_PARTS)}
+          />
+        ) : null}
+
+        {storedTicks !== null ? (
+          <CountField
+            kept={kept}
+            stored={storedTicks.length}
+            accent={colour}
+            onDrop={dropLastTick}
           />
         ) : null}
 
@@ -289,6 +350,21 @@ function messageFor(code: string): string {
   switch (code) {
     case 'NOT_AN_INTERVAL':
       return 'A Moment cannot be given an end time.'
+    // Each tick code gets its own sentence. The server went to the trouble of
+    // telling them apart; collapsing them into "something went wrong" here
+    // would throw that away at exactly the moment it is useful.
+    case 'NOT_COUNTED':
+      return 'This span was not counted, so it has no count to correct.'
+    case 'TICKS_REQUIRED':
+      return 'A counted span keeps at least one count. Delete the event instead.'
+    case 'TOO_MANY_TICKS':
+      return 'That is more counts than one span can hold.'
+    case 'TICKS_NOT_ASCENDING':
+      return 'The counts are out of order.'
+    case 'TICK_BEFORE_START':
+      return 'A count is timed before the span begins. Move the start earlier, or drop that count.'
+    case 'BAD_TICKS':
+      return 'The server could not read the counts.'
     case 'UNKNOWN_FIELD':
       return 'That field no longer exists on this tracker.'
     case 'BAD_FIELD_VALUE':
@@ -310,6 +386,66 @@ function sameValues(
 }
 
 /* ------------------------------------------------------------- controls -- */
+
+/**
+ * The count, correctable — downwards only.
+ *
+ * `ticks` is the source of truth and the count is `ticks.length`, so a count
+ * can honestly be *reduced*: dropping the most recent taps discards timestamps
+ * that exist. It cannot be raised, because a tap that never happened has no
+ * time it could be said to have happened at, and putting a fabricated one in
+ * the array would move the span's end to an instant nobody logged. Hence one
+ * button, one direction, and a line saying why.
+ */
+function CountField({
+  kept,
+  stored,
+  accent,
+  onDrop,
+}: {
+  kept: number
+  stored: number
+  accent: string
+  onDrop: () => void
+}) {
+  return (
+    <div>
+      <p className="stencil mb-2.5" style={{ color: accent }}>
+        Count
+      </p>
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onDrop}
+          disabled={kept <= 1}
+          aria-label="Remove the most recent count"
+          className="tap flex size-[60px] shrink-0 items-center justify-center rounded-2xl border border-ink-600 bg-ink-700 text-[26px] leading-none font-light text-text disabled:opacity-35"
+        >
+          <span aria-hidden>−</span>
+        </button>
+
+        <p
+          className="digits flex h-[60px] min-w-0 flex-1 items-center rounded-2xl border border-ink-600 bg-ink-700 px-4 text-[20px]"
+          aria-label={`${kept} ${kept === 1 ? 'count' : 'counts'}`}
+        >
+          <span aria-hidden>×{kept}</span>
+          {kept < stored ? (
+            <span aria-hidden className="ml-2 text-[13px] text-text-dim">
+              was ×{stored}
+            </span>
+          ) : null}
+        </p>
+      </div>
+
+      <p className="mt-2 text-[13px] leading-snug text-text-dim">
+        {kept <= 1
+          ? 'The first count is the span\u2019s own start — to remove it, delete the event.'
+          : 'A count can only go down: each one is a recorded time, and there is none to invent for a tap that never happened. Removing the last one moves the end back with it.'}
+      </p>
+    </div>
+  )
+}
 
 /**
  * A date and a clock, side by side, both native so the phone's own pickers do

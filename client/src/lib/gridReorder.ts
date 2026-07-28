@@ -8,45 +8,23 @@
  * lives behind the pencil, where a tile is a thing to manage rather than a
  * thing to press.
  *
- * The handle is the only element that gives up `touch-action`, so ordinary
- * scrolling through a long grid is untouched even while editing.
+ * The gesture itself — the grip, the pointer capture, the arrow keys, and the
+ * rule that the grip is the only element to give up `touch-action` — lives in
+ * `reorderGesture.ts` and is shared with the one-dimensional list. What is left
+ * here is the part that is genuinely 2-D: nearest slot by distance, clamping
+ * the tile to the grid's box, and the reflow.
  */
 
+import { useCallback, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
+
 import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
-} from 'react'
-
-import { hapticLog, hapticStop } from './haptics.ts'
+  boundsOf,
+  useReorderGesture,
+  type ActiveDrag,
+  type ReorderGesture,
+  type Slot,
+} from './reorderGesture.ts'
 import { arrayMove } from './trackerOrder.ts'
-
-/** Drag within this of a screen edge and the page follows. */
-const EDGE_PX = 90
-const EDGE_MAX_SPEED = 14
-
-/** A tile's slot, in document coordinates so page scrolling cannot stale it. */
-interface Slot {
-  x: number
-  y: number
-  w: number
-  h: number
-}
-
-interface Active {
-  pointerId: number
-  from: number
-  /** Where the finger went down, in document coordinates. */
-  startDoc: { x: number; y: number }
-  /** Where the finger is now, in document coordinates. */
-  doc: { x: number; y: number }
-  slots: Slot[]
-}
 
 function nearestSlot(slots: Slot[], point: { x: number; y: number }): number {
   let best = 0
@@ -79,15 +57,7 @@ export interface GridReorder {
     style: CSSProperties
   }
   /** Spread onto the grip inside that wrapper. */
-  handleProps: (index: number) => {
-    onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void
-    onPointerMove: (e: ReactPointerEvent<HTMLElement>) => void
-    onPointerUp: (e: ReactPointerEvent<HTMLElement>) => void
-    onPointerCancel: (e: ReactPointerEvent<HTMLElement>) => void
-    onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => void
-    onContextMenu: (e: ReactMouseEvent<HTMLElement>) => void
-    style: CSSProperties
-  }
+  handleProps: ReorderGesture['handleProps']
 }
 
 /**
@@ -100,179 +70,35 @@ export function useGridReorder(
   onCommit: (next: string[]) => void,
   enabled: boolean,
 ): GridReorder {
-  const [active, setActive] = useState<Active | null>(null)
-
-  const container = useRef<HTMLElement | null>(null)
-  const idsRef = useRef(ids)
-  idsRef.current = ids
-
-  /**
-   * Belt and braces. The grip is its own button, so a drag's click can no
-   * longer reach a tile — but a swallowed click costs nothing and a phantom
-   * 3am feed logged by a stray gesture would cost a great deal.
-   */
-  const swallowClick = useRef(false)
-  const clientY = useRef(0)
-
-  const isDragging = active !== null
-
-  // Nothing survives leaving edit mode mid-gesture.
-  useEffect(() => {
-    if (!enabled) setActive(null)
-  }, [enabled])
-
-  // Hold the page still, but *only* while a tile is actually in hand.
-  useEffect(() => {
-    if (!isDragging) return
-    const block = (e: TouchEvent) => e.preventDefault()
-    document.addEventListener('touchmove', block, { passive: false })
-    return () => document.removeEventListener('touchmove', block)
-  }, [isDragging])
-
-  // Drag toward an edge and the page comes with you, so a grid taller than the
-  // screen is still reorderable with one thumb.
-  useEffect(() => {
-    if (!isDragging) return
-    let raf = 0
-    const tick = () => {
-      raf = requestAnimationFrame(tick)
-      const y = clientY.current
-      const h = window.innerHeight
-      let step = 0
-      if (y < EDGE_PX) step = -Math.ceil(((EDGE_PX - y) / EDGE_PX) * EDGE_MAX_SPEED)
-      else if (y > h - EDGE_PX) step = Math.ceil(((y - (h - EDGE_PX)) / EDGE_PX) * EDGE_MAX_SPEED)
-      if (step === 0) return
-
-      const before = window.scrollY
-      window.scrollBy(0, step)
-      const moved = window.scrollY - before
-      if (moved === 0) return
-      // The finger has not moved, but the document under it has.
-      setActive((a) => (a ? { ...a, doc: { x: a.doc.x, y: a.doc.y + moved } } : a))
-    }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [isDragging])
-
-  const targetIndex =
-    active && active.slots.length > 0 ? nearestSlot(active.slots, active.doc) : null
-
-  const move = useCallback(
-    (from: number, delta: number) => {
-      const to = from + delta
-      if (to < 0 || to >= idsRef.current.length) return
-      hapticLog()
-      onCommit(arrayMove(idsRef.current, from, to))
-    },
-    [onCommit],
+  const onMove = useCallback(
+    (from: number, to: number) => onCommit(arrayMove(ids, from, to)),
+    [ids, onCommit],
   )
+
+  const gesture = useReorderGesture({
+    length: ids.length,
+    nearest: nearestSlot,
+    onMove,
+    enabled,
+  })
+
+  const { active, targetIndex, itemGuardProps } = gesture
 
   const itemProps = useCallback(
     (index: number) => ({
-      onClickCapture: (e: ReactMouseEvent<HTMLElement>) => {
-        if (!swallowClick.current) return
-        swallowClick.current = false
-        e.preventDefault()
-        e.stopPropagation()
-      },
+      ...itemGuardProps,
       style: styleFor(index, active, targetIndex),
     }),
-    [active, targetIndex],
-  )
-
-  const handleProps = useCallback(
-    (index: number) => ({
-      onPointerDown: (e: ReactPointerEvent<HTMLElement>) => {
-        if (!enabled || idsRef.current.length < 2) return
-        if (e.pointerType === 'mouse' && e.button !== 0) return
-
-        const parent = container.current
-        if (!parent) return
-        const slots = Array.from(parent.children).map((child) => {
-          const r = child.getBoundingClientRect()
-          return { x: r.x + window.scrollX, y: r.y + window.scrollY, w: r.width, h: r.height }
-        })
-        if (slots.length !== idsRef.current.length) return
-
-        clientY.current = e.clientY
-        swallowClick.current = true
-        hapticStop()
-        try {
-          e.currentTarget.setPointerCapture(e.pointerId)
-        } catch {
-          /* the pointer is already gone */
-        }
-        const doc = { x: e.clientX + window.scrollX, y: e.clientY + window.scrollY }
-        setActive({ pointerId: e.pointerId, from: index, startDoc: doc, doc, slots })
-      },
-
-      onPointerMove: (e: ReactPointerEvent<HTMLElement>) => {
-        clientY.current = e.clientY
-        setActive((a) => {
-          if (!a || a.pointerId !== e.pointerId) return a
-          const doc = { x: e.clientX + window.scrollX, y: e.clientY + window.scrollY }
-          if (doc.x === a.doc.x && doc.y === a.doc.y) return a
-          return { ...a, doc }
-        })
-      },
-
-      onPointerUp: (e: ReactPointerEvent<HTMLElement>) => {
-        if (!active || active.pointerId !== e.pointerId) return
-        try {
-          e.currentTarget.releasePointerCapture(e.pointerId)
-        } catch {
-          /* already released */
-        }
-        const to = nearestSlot(active.slots, active.doc)
-        const from = active.from
-        setActive(null)
-        // One write, on release. Never one per pixel.
-        if (to !== from) {
-          hapticLog()
-          onCommit(arrayMove(idsRef.current, from, to))
-        }
-      },
-
-      onPointerCancel: (e: ReactPointerEvent<HTMLElement>) => {
-        setActive((a) => (a && a.pointerId === e.pointerId ? null : a))
-      },
-
-      /**
-       * The accessible half. A grid has no single "up", so the arrows move the
-       * tile one place earlier or later in the same order the server stores —
-       * which is exactly what a drag does, without a pointer.
-       */
-      onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => {
-        if (!enabled) return
-        if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-          e.preventDefault()
-          move(index, -1)
-        } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-          e.preventDefault()
-          move(index, 1)
-        }
-      },
-
-      onContextMenu: (e: ReactMouseEvent<HTMLElement>) => {
-        e.preventDefault()
-      },
-
-      // The ONLY element that gives up touch-action. Scrolling the grid with a
-      // thumb anywhere else keeps working, edit mode or not.
-      style: { touchAction: 'none' } as CSSProperties,
-    }),
-    [active, enabled, move, onCommit],
+    [active, targetIndex, itemGuardProps],
   )
 
   return {
-    containerRef: (node) => {
-      container.current = node
-    },
-    dragging: isDragging,
+    containerRef: gesture.containerRef,
+    dragging: active !== null,
     draggedIndex: active?.from ?? null,
     targetIndex,
     itemProps,
-    handleProps,
+    handleProps: gesture.handleProps,
   }
 }
 
@@ -290,17 +116,7 @@ function clampToGrid(
 ): { dx: number; dy: number } {
   const own = slots[index]
   if (!own) return { dx, dy }
-
-  let left = Infinity
-  let right = -Infinity
-  let top = Infinity
-  let bottom = -Infinity
-  for (const s of slots) {
-    left = Math.min(left, s.x)
-    right = Math.max(right, s.x + s.w)
-    top = Math.min(top, s.y)
-    bottom = Math.max(bottom, s.y + s.h)
-  }
+  const { left, right, top, bottom } = boundsOf(slots)
 
   return {
     dx: Math.max(left - own.x, Math.min(right - (own.x + own.w), dx)),
@@ -315,9 +131,9 @@ function clampToGrid(
  * and every other tile is translated from its own slot to the slot it would
  * occupy if the drop happened now. That is what makes the grid reflow around
  * the gap without a single reparent — and because the slots were measured in
- * document coordinates, it survives the page auto-scrolling underneath.
+ * the scroller's content coordinates, it survives auto-scrolling underneath.
  */
-function styleFor(index: number, active: Active | null, target: number | null): CSSProperties {
+function styleFor(index: number, active: ActiveDrag | null, target: number | null): CSSProperties {
   if (!active || target === null) return {}
 
   if (index === active.from) {

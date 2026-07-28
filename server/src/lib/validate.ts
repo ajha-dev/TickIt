@@ -30,6 +30,9 @@ export const patchProfileSchema = z.object({
 
 export const MAX_FIELDS = 1
 
+/** Contract: a CHOICE field carries 2–10 options. */
+export const MAX_OPTIONS = 10
+
 export const fieldKindSchema = z.enum(['CHOICE', 'NUMBER', 'BOOL', 'TEXT'])
 
 /**
@@ -53,7 +56,7 @@ const fieldDefInputSchema = z
 
     if (f.kind === 'CHOICE') {
       if (!f.options || f.options.length === 0) return fail('OPTIONS_REQUIRED')
-      if (f.options.length < 2 || f.options.length > 6) return fail('OPTIONS_REQUIRED')
+      if (f.options.length < 2 || f.options.length > MAX_OPTIONS) return fail('OPTIONS_REQUIRED')
       if (f.options.some((o) => o.length < 1 || o.length > 16)) return fail('OPTIONS_REQUIRED')
     } else if (f.options !== undefined) {
       return fail('OPTIONS_NOT_ALLOWED')
@@ -143,6 +146,10 @@ export const createTrackerSchema = z.object({
   colour: z.string().min(1).max(64).optional(),
   icon: z.string().min(1).max(64).optional(),
   fields: fieldsSchema.optional(),
+  // Only meaningful on an INTERVAL. `counter: true` on an INSTANT is rejected in
+  // the route with COUNTER_NOT_ALLOWED — the schema cannot see `type` on PATCH,
+  // where it comes from the stored row, so the check lives in one place for both.
+  counter: z.boolean().optional(),
 })
 
 export const patchTrackerSchema = z.object({
@@ -152,6 +159,9 @@ export const patchTrackerSchema = z.object({
   sortOrder: z.number().int().optional(),
   archivedAt: epochMs.nullable().optional(),
   fields: fieldsSchema.optional(),
+  // Unlike `type`, this IS changeable after creation — it is configuration, not
+  // identity. Existing events keep whatever ticks they already have.
+  counter: z.boolean().optional(),
 })
 
 /* -------------------------------------------------------------------- events */
@@ -188,11 +198,73 @@ export const stopEventSchema = z.object({
   endAt: epochMs.optional(),
 })
 
+/**
+ * Contract: a counted span holds at most 500 taps. This is a kick counter, not a
+ * telemetry stream — the cap bounds the JSON column and the request body, and no
+ * real session comes near it.
+ */
+export const MAX_TICKS = 500
+
+/**
+ * The tap timestamps of a counted span — **the whole array, absolutely**, never
+ * a delta. That is what makes counting idempotent under the offline queue's
+ * retries: a replayed `count += 1` silently double-counts and nothing can detect
+ * it afterwards, whereas a replayed absolute array is a no-op. The same
+ * operation therefore serves increment *and* undo (undo sends a shorter array).
+ *
+ * Elements are validated by hand rather than by `z.array(epochMs)` so that each
+ * failure reports its own contract code — `TICKS_REQUIRED`, `TOO_MANY_TICKS`,
+ * `TICKS_NOT_ASCENDING`, `BAD_TICKS` — instead of zod's per-element prose. Each
+ * one tells the client something different to say.
+ *
+ * `tick >= startAt` is NOT checked here — it needs the stored row. See
+ * `ticksStartError`.
+ */
+export const ticksSchema = z
+  .array(z.any())
+  .superRefine((ticks: unknown[], ctx) => {
+    const fail = (message: string): void => {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message })
+    }
+    // Empty is rejected, and undo therefore cannot empty the array. Removing the
+    // first tap would describe an event that did not happen; DELETE is how you
+    // say that.
+    if (ticks.length === 0) return fail('TICKS_REQUIRED')
+    if (ticks.length > MAX_TICKS) return fail('TOO_MANY_TICKS')
+    for (const t of ticks) {
+      if (typeof t !== 'number' || !Number.isInteger(t) || !Number.isFinite(t)) {
+        return fail('BAD_TICKS')
+      }
+    }
+    // Ascending, but NOT strictly: two taps inside the same millisecond are
+    // physically possible and are not an error. Only going backwards is.
+    for (let i = 1; i < ticks.length; i++) {
+      if ((ticks[i] as number) < (ticks[i - 1] as number)) return fail('TICKS_NOT_ASCENDING')
+    }
+  })
+  .transform((ticks) => ticks as number[])
+
+/**
+ * The one tick rule that needs the stored row. Ascending order is already
+ * guaranteed by `ticksSchema`, so the first element is the smallest.
+ */
+export function ticksStartError(ticks: number[], startAt: number): 'TICK_BEFORE_START' | null {
+  return ticks[0] !== undefined && ticks[0] < startAt ? 'TICK_BEFORE_START' : null
+}
+
+export const countEventSchema = z.object({
+  ticks: ticksSchema,
+})
+
 export const patchEventSchema = z.object({
   startAt: epochMs.optional(),
   endAt: epochMs.nullable().optional(),
   values: valuesSchema.optional(),
   note: z.string().max(4000).nullable().optional(),
+  // Editing ticks after the fact IS a correction, so unlike POST /count this
+  // path bumps `updatedAt`. It cannot retro-fit a counter onto an uncounted
+  // event — the route rejects that with NOT_COUNTED.
+  ticks: ticksSchema.optional(),
 })
 
 /* ----------------------------------------------------------------- reminders */

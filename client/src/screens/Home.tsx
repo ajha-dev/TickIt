@@ -14,6 +14,7 @@ import { hapticLog, hapticStop, hapticUndo } from '../lib/haptics.ts'
 import { isPending } from '../lib/outbox.ts'
 import {
   useCaptureValues,
+  useCountSpan,
   useDeleteEvent,
   useLogMoment,
   useRunning,
@@ -68,6 +69,7 @@ export function Home({
   const logMoment = useLogMoment(profileId)
   const startSpan = useStartSpan(profileId)
   const stopSpan = useStopSpan(profileId)
+  const countSpan = useCountSpan(profileId)
   const deleteEvent = useDeleteEvent(profileId)
   const captureValues = useCaptureValues(profileId)
 
@@ -211,6 +213,17 @@ export function Home({
     [stopSpan],
   )
 
+  const onCount = useCallback(
+    (event: Event, ticks: number[]) => {
+      countSpan.mutate({
+        eventId: event.id,
+        ticks,
+        label: trackerById.get(event.trackerId)?.name ?? 'Count',
+      })
+    },
+    [countSpan, trackerById],
+  )
+
   const resolveConflict = useCallback(
     (restart: boolean) => {
       if (!conflict) return
@@ -332,6 +345,7 @@ export function Home({
                 event={event}
                 tracker={trackerById.get(event.trackerId)}
                 pending={isPending(event.id)}
+                onCount={(ticks) => onCount(event, ticks)}
                 onStop={() => onStop(event.id)}
               />
             ))}

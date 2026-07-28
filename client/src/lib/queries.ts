@@ -8,7 +8,7 @@ import {
 
 import * as api from '../api.ts'
 import { AlreadyRunningError } from '../api.ts'
-import { cancelPending, enqueue, flush, uuidv7 } from './outbox.ts'
+import { cancelPending, enqueue, enqueueCount, flush, uuidv7 } from './outbox.ts'
 import type { Event, FieldDefInput, Profile, Tracker, TrackerType } from '../types.ts'
 
 export const keys = {
@@ -101,7 +101,13 @@ export function useCreateTracker(
 ): UseMutationResult<
   Tracker,
   Error,
-  { name: string; type: TrackerType; colour?: string; fields?: FieldDefInput[] }
+  {
+    name: string
+    type: TrackerType
+    colour?: string
+    fields?: FieldDefInput[]
+    counter?: boolean
+  }
 > {
   const qc = useQueryClient()
   return useMutation({
@@ -124,6 +130,7 @@ export function useUpdateTracker(
       colour?: string
       archivedAt?: number | null
       fields?: FieldDefInput[]
+      counter?: boolean
     }
   }
 > {
@@ -197,6 +204,10 @@ function localEvent(tracker: Tracker, id: string, startAt: number): Event {
     endAt: null,
     values: {},
     note: null,
+    // Mirrors the server: a counted span is born holding its own first tap, so
+    // the count reads 1 from the instant the card appears rather than 0.
+    // Everything else — every Moment, every uncounted Span — carries null.
+    ticks: tracker.type === 'INTERVAL' && tracker.counter ? [startAt] : null,
     createdAt: startAt,
     updatedAt: startAt,
   }
@@ -292,6 +303,7 @@ function mergeLocally(
     endAt: null,
     values: {},
     note: null,
+    ticks: null,
     createdAt: now,
     ...patch,
     updatedAt: now,
@@ -420,18 +432,71 @@ export function useStartSpan(profileId: string): UseMutationResult<Event, Error,
   })
 }
 
-/** Stops a Span. The card leaves the pinned area on tap. */
+/**
+ * Records a tap on a counted span — or takes one back.
+ *
+ * The caller hands over the **whole** array it wants the event to have, which
+ * is exactly what goes on the wire. Increment and undo are therefore the same
+ * operation, and replaying it is idempotent.
+ *
+ * The running cache is updated before the queue write, so the headline count
+ * moves on the same frame as the thumb. Nothing here waits on a network: a
+ * kick counter that pauses at 3am to think about the Pi is not a kick counter.
+ */
+export function useCountSpan(
+  profileId: string,
+): UseMutationResult<Event | null, Error, { eventId: string; ticks: number[]; label?: string }> {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ eventId, ticks, label }) => {
+      const key = keys.running(profileId)
+      const existing = (qc.getQueryData<Event[]>(key) ?? []).find((e) => e.id === eventId)
+
+      qc.setQueryData<Event[]>(key, (previous) =>
+        previous ? previous.map((e) => (e.id === eventId ? { ...e, ticks } : e)) : previous,
+      )
+      // Merged with any count already queued for this event rather than
+      // appended — see enqueueCount. The array supersedes; the key does not.
+      await enqueueCount({ kind: 'count', id: eventId, profileId, label: label ?? 'Count', ticks })
+      void flush()
+      return existing ? { ...existing, ticks } : null
+    },
+    onError: () => {
+      // The queue write itself failed — IndexedDB is the only thing that can
+      // fail here — so the optimistic tick is not durable. Refetch rather than
+      // leave a count on screen that nothing is holding.
+      void qc.invalidateQueries({ queryKey: keys.running(profileId) })
+    },
+    onSuccess: (event) => {
+      if (event) {
+        patchEventCaches(qc, profileId, { kind: 'merge', id: event.id, patch: { ticks: event.ticks } })
+      }
+    },
+  })
+}
+
+/**
+ * Stops a Span. The card leaves the pinned area on tap.
+ *
+ * **A counted span ends at its last tap, not at Stop.** The optimistic end is
+ * that tick, matching what the server will derive, so the Timeline never
+ * flashes a duration inflated by however long it took to notice the session was
+ * over. `endAt` is still sent — the server ignores it on the counted path, and
+ * an uncounted span needs it.
+ */
 export function useStopSpan(profileId: string): UseMutationResult<Event | null, Error, string> {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (eventId) => {
       // The moment of the tap, not the moment of sync — a span that ended at
       // 03:40 must not be recorded as ending when the phone reconnected.
-      const endAt = Date.now()
+      const stoppedAt = Date.now()
       const existing = (qc.getQueryData<Event[]>(keys.running(profileId)) ?? []).find(
         (e) => e.id === eventId,
       )
-      await enqueue({ kind: 'stop', id: eventId, profileId, label: 'Stop', endAt }, endAt)
+      const lastTick = existing?.ticks?.[existing.ticks.length - 1]
+      const endAt = lastTick ?? stoppedAt
+      await enqueue({ kind: 'stop', id: eventId, profileId, label: 'Stop', endAt }, stoppedAt)
       void flush()
       return existing ? { ...existing, endAt } : null
     },
@@ -531,6 +596,12 @@ export function useUpdateEvent(
       endAt?: number | null
       values?: Record<string, string | number | boolean>
       note?: string | null
+      /**
+       * A counted span's taps, corrected. Unlike the count endpoint this DOES
+       * mark the event edited — which is right: a count that was corrected
+       * afterwards is exactly the thing the marker exists to admit to.
+       */
+      ticks?: number[]
     }
   }
 > {

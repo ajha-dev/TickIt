@@ -78,6 +78,7 @@ interface Tracker {
   colour: string; icon: string
   sortOrder: number
   fields: FieldDef[]          // JSON column; [] in Phase 1
+  counter: boolean            // INTERVAL only — see Counted spans
   archivedAt: number | null
   createdAt: number; updatedAt: number
 }
@@ -89,6 +90,7 @@ interface Event {
   endAt: number | null        // null = INSTANT, or a RUNNING interval
   values: Record<string, string | number | boolean>   // JSON column; {} in Phase 1
   note: string | null
+  ticks: number[] | null      // tap times of a COUNTED span; null otherwise
   createdAt: number; updatedAt: number
 }
 ```
@@ -115,8 +117,11 @@ All responses are JSON. Errors: `{ error: string }` with 400 / 404 / 409.
 
 ### Trackers
 - `GET /api/trackers?profileId=…` → `Tracker[]` (sorted by `sortOrder`, then `createdAt`)
-- `POST /api/trackers` `{ profileId, name, type, colour?, icon?, fields? }` → `Tracker`
-- `PATCH /api/trackers/:id` `{ name?, colour?, icon?, sortOrder?, archivedAt?, fields? }` → `Tracker`
+- `POST /api/trackers` `{ profileId, name, type, colour?, icon?, fields?, counter? }` → `Tracker`
+- `PATCH /api/trackers/:id` `{ name?, colour?, icon?, sortOrder?, archivedAt?, fields?, counter? }` → `Tracker`
+  `counter` defaults to `false`. **400 `COUNTER_NOT_ALLOWED`** for `counter: true`
+  on an `INSTANT` tracker — a Moment has no duration to count within. Unlike
+  `type`, `counter` **is** changeable after creation; see Counted spans.
 - `DELETE /api/trackers/:id` → `204`
 - `GET /api/trackers/:id/delete-preview` → `{ events: number }`
 
@@ -144,22 +149,103 @@ All responses are JSON. Errors: `{ error: string }` with 400 / 404 / 409.
   **409** if the tracker is `INTERVAL` and already has a running event — body
   `{ error: 'ALREADY_RUNNING', eventId }`. The client turns that into the
   stop-first prompt.
+  `ticks` is **server-derived**: `[startAt]` when the tracker is `INTERVAL` with
+  `counter: true`, and `null` otherwise. The client never sends it. This is the
+  only place `Tracker.counter` is read.
 - `POST /api/events/:id/stop` `{ endAt? }` → `Event`
   `endAt` defaults to now. **400** if the event is `INSTANT` or already stopped.
-  **400** if `endAt < startAt`.
-- `PATCH /api/events/:id` `{ startAt?, endAt?, values?, note? }` → `Event`
+  **400** if `endAt < startAt`. `endAt === startAt` is legal — the guard is
+  strict — so a zero-length span is a 200.
+  **On a counted span (`ticks !== null`) `endAt` is the last tick and any
+  `endAt` in the body is ignored.** See Counted spans.
+- `POST /api/events/:id/count` `{ ticks }` → `Event`
+  Records the taps of a counted span. See Counted spans.
+- `PATCH /api/events/:id` `{ startAt?, endAt?, values?, note?, ticks? }` → `Event`
   **400** if the result would have `endAt < startAt`.
+  **400 `TICK_BEFORE_START`** if the result would have a tick before `startAt`
+  — checked against the *resulting* `startAt`, including when only `startAt`
+  moves, so a start can never be dragged past the span's own first tap.
 - `DELETE /api/events/:id` → `204`
 
-`updatedAt` is set on every mutation **except `POST /events/:id/stop`** —
-stopping is how a Span normally completes, not a correction to it. If stop
-bumped `updatedAt`, the client's "edited" marker would appear on every Span ever
-finished and mean nothing. The client shows that marker when
-`updatedAt !== createdAt`.
+`updatedAt` is set on every mutation **except `POST /events/:id/stop` and
+`POST /events/:id/count`** — stopping is how a Span normally completes and
+counting is how a counted Span normally proceeds; neither is a correction to it.
+If either bumped `updatedAt`, the client's "edited" marker would appear on every
+Span ever finished, or on every counted session ever logged, and mean nothing.
+The client shows that marker when `updatedAt !== createdAt`. `PATCH` — an edit
+after the fact — is the only thing that bumps it, including `PATCH { ticks }`.
 
 `PATCH /api/events/:id` returns **400 `NOT_AN_INTERVAL`** if it would set a
 non-null `endAt` on an `INSTANT` event — that would silently turn a Moment into
 a Span whose tracker still says `INSTANT`.
+
+## Counted spans
+
+A Span tracker may optionally carry a counter (`Tracker.counter`). The first tap
+starts the span and records tap 1; each later tap records another; Stop ends the
+session. One rule governs all of it:
+
+> **A counted span runs from its first tap to its last tap.**
+> The stop time contributes nothing.
+
+So a span that was never incremented is **zero-length** (`endAt === startAt`),
+not "start until stop" — it happened at a moment, and Stop merely closed the
+session. Ten taps is a span from the first to the tenth. An uncounted Span is
+untouched and still ends when you stop it.
+
+**The tap timestamps are stored, not a total.** `Event.ticks` is a `number[]`,
+ascending, whose first element is always `startAt`, or `null` on anything that
+is not a counted span — which is every event that existed before this feature.
+**The count is never stored: it is `ticks.length`.** A total and the timestamps
+it came from must not be able to disagree about the same fact. Holding only a
+total also makes undo unable to restore the previous tap's time after a reload,
+which would leave the session ending late.
+
+**`ticks !== null` is the single test for "this event is counted."** Nothing
+downstream ever consults `Tracker.counter` — the flag is read in exactly one
+place, `POST /api/events`, at creation. So turning the toggle off while a span is
+running leaves that session countable and stopping correctly, and turning it on
+never retro-fits a counter onto a span that started without one. The app does not
+rewrite history to match a definition change, consistent with deleting a field.
+
+### `POST /api/events/:id/count` `{ ticks }` → `Event`
+
+The body carries **the whole array, absolutely — never a delta.** The offline
+queue retries when it cannot tell whether a request landed, and a replayed
+`count += 1` double-counts silently with nothing able to detect it afterwards;
+an absolute array replays as a no-op. The same operation therefore serves
+increment **and** undo — undo just sends a shorter array — so there is no
+separate undo endpoint anywhere in the system. Verified: three sends of the same
+array leave the count unchanged.
+
+**It does not bump `updatedAt`**, for the same reason `stop` does not.
+
+Validation, and the codes:
+
+| condition | status | code |
+|---|---|---|
+| no such event | 404 | `NOT_FOUND` |
+| the event is `INSTANT` | 400 | `NOT_AN_INTERVAL` |
+| `ticks === null` on the event | 400 | `NOT_COUNTED` |
+| already stopped | 400 | `ALREADY_STOPPED` |
+| any tick `< startAt` | 400 | `TICK_BEFORE_START` |
+| empty array | 400 | `TICKS_REQUIRED` |
+| more than 500 ticks | 400 | `TOO_MANY_TICKS` |
+| goes backwards | 400 | `TICKS_NOT_ASCENDING` |
+| not integer epoch ms | 400 | `BAD_TICKS` |
+
+Ascending is **not strict** — two taps inside the same millisecond are
+physically possible and are not an error; only going backwards is. The array is
+capped at **500**: this is a kick counter, not a telemetry stream. Empty is
+rejected, so undo can never empty it — removing the first tap would describe an
+event that did not happen, and `DELETE` is how you say that.
+
+`PATCH /api/events/:id { ticks }` edits the taps after the fact, which **is** a
+correction, so unlike `count` it bumps `updatedAt`. It returns 400 `NOT_COUNTED`
+on an event whose `ticks` is null: a counter cannot be retro-fitted, because
+there are no real tap times to invent. `endAt` remains independently editable
+once the span is stopped — the end is derived at stop, then behaves as an
+ordinary timestamp.
 
 ## Field definitions and values
 
@@ -172,7 +258,7 @@ Over the cap → 400 `TOO_MANY_FIELDS`. Validation on create/patch:
 
 - `label` — 1–24 chars, required, unique within the tracker (case-insensitive).
 - `kind` — one of `CHOICE | NUMBER | BOOL | TEXT`.
-- `options` — **required and non-empty for `CHOICE`** (2–6 entries, each 1–16
+- `options` — **required and non-empty for `CHOICE`** (2–10 entries, each 1–16
   chars), rejected with 400 `OPTIONS_REQUIRED` / `OPTIONS_NOT_ALLOWED` for any
   other kind.
 - `unit` — optional, `NUMBER` only, ≤ 8 chars. 400 `UNIT_NOT_ALLOWED` otherwise.
@@ -296,9 +382,15 @@ transition rather than drifting by an hour.
 
 A sweep runs every 60s. For each enabled reminder:
 
-- **Anchor** = the tracker's most recent activity, `max(endAt ?? startAt)` across
-  its events, or the reminder's `createdAt` if it has never been used. A
-  brand-new reminder on a dormant tracker must not fire instantly.
+- **Anchor** = the tracker's most recent activity,
+  `max(endAt ?? last tick ?? startAt)` across its events, or the reminder's
+  `createdAt` if it has never been used. A brand-new reminder on a dormant
+  tracker must not fire instantly.
+  The last tick is consulted because a RUNNING span has `endAt === null`: without
+  it the anchor sticks at `startAt` and never advances, so a two-hour counted
+  session on a tracker with a 1h idle reminder would be told "nothing logged for
+  1h" mid-session, while the user was actively tapping. **Each tap is activity.**
+  For an uncounted event `ticks` is null and the anchor is unchanged.
 - Fire when `now - anchor >= afterMs`.
 - **Fire once per idle period**, not every sweep: skip if
   `lastFiredAt >= anchor`. Logging an event moves the anchor forward and re-arms
