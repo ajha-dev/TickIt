@@ -18,7 +18,7 @@
     "@hono/node-server": "^2.0.12",
     "better-sqlite3": "^12.11.1",
     "drizzle-orm": "^0.45.2",
-    "hono": "^4.6.14",
+    "hono": "^4.12.34",
     "uuid": "^11.0.3",
     "web-push": "^3.6.7",
     "zod": "^3.24.1"
