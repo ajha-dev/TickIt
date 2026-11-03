@@ -27,7 +27,7 @@ export function EventRow({
 }: {
   event: Event
   tracker: Tracker | undefined
-  /** Time since the previous span of a `gaps` tracker — contractions. */
+  /** The rest since the previous span of a `gaps` tracker — contractions. */
   gap?: Gap
   onOpen: () => void
   /** "started yesterday" — a span whose beginning is off the top of this day. */
@@ -139,19 +139,11 @@ export function EventRow({
           ) : null}
         </span>
 
-        {/* Frequency first: it is the number labour is judged by. The row's own
-            duration already sits on the line above, so this reads as "1m 02s
-            long, every 5m 10s, after 4m 08s of rest". */}
+        {/* The row's own length already sits on the line above, so this reads
+            as "1m 02s long, after 4m 08s of rest". */}
         {gap ? (
-          <span
-            className="digits mt-1 block text-[13px] text-text-dim"
-            aria-label={`Every ${formatDuration(gap.frequency)}, after ${formatDuration(gap.rest)} rest`}
-          >
-            <span aria-hidden>
-              every {formatDuration(gap.frequency)}
-              <span className="opacity-55">{' · '}</span>
-              {formatDuration(gap.rest)} rest
-            </span>
+          <span className="digits mt-1 block text-[13px] text-text-dim">
+            {formatDuration(gap.rest)} rest
           </span>
         ) : null}
 

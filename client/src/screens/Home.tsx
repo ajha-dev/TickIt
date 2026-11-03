@@ -10,7 +10,6 @@ import { TrackerSheets, type TrackerSheetState } from '../components/TrackerShee
 import { TrackerTile } from '../components/TrackerTile.tsx'
 import { UndoToast, type ToastState } from '../components/UndoToast.tsx'
 import { safeColour } from '../lib/colours.ts'
-import { gapsByEvent } from '../lib/gaps.ts'
 import { useGridReorder } from '../lib/gridReorder.ts'
 import { hapticLog, hapticStop, hapticUndo } from '../lib/haptics.ts'
 import { isPending, useOutbox } from '../lib/outbox.ts'
@@ -145,7 +144,7 @@ export function Home({
 
   /**
    * Recent history, fetched only when some tracker shows gaps — contractions
-   * need the last few to say "since last" and "every …"; nothing else on this
+   * need the last few to say "since last" and fill the last-hour card; nothing else on this
    * screen looks backwards.
    *
    * The window is pinned to the hour so its query key changes once an hour,
@@ -168,7 +167,6 @@ export function Home({
     for (const e of running) byId.set(e.id, e)
     return [...byId.values()]
   }, [gapTrackers.length, recentQuery.data, running])
-  const recentGaps = useMemo(() => gapsByEvent(recent, trackerById), [recent, trackerById])
   const lastStartByTracker = useMemo(() => {
     const map = new Map<string, number>()
     for (const e of recent) {
@@ -444,7 +442,6 @@ export function Home({
                 event={event}
                 tracker={trackerById.get(event.trackerId)}
                 pending={isPending(event.id)}
-                gap={recentGaps.get(event.id)}
                 onCount={(ticks) => onCount(event, ticks)}
                 onStop={() => onStop(event.id)}
               />

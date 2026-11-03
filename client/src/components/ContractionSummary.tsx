@@ -4,12 +4,11 @@ import { formatDuration, useNow } from '../lib/time.ts'
 import type { Event, Tracker } from '../types.ts'
 
 /**
- * The last hour of one `gaps` tracker at a glance — how many, how long, how
- * often. These are the three numbers a midwife asks for on the phone, so they
- * are written out rather than charted.
+ * The last hour of one `gaps` tracker at a glance — how many and how long,
+ * written out rather than charted.
  *
- * Renders nothing until there are two in the hour: one contraction has a
- * length but no rhythm yet, and "every —" would be a card that says nothing.
+ * Renders nothing until there are two in the hour: a single contraction is
+ * already on the tile and the timeline, and a card about it says nothing new.
  *
  * Colour discipline as on every surface (THEME.md): the tracker colour lives
  * only in the dot.
@@ -24,7 +23,6 @@ export function ContractionSummary({ tracker, events }: { tracker: Tracker; even
   const parts = [
     `${stats.count} ${tracker.name.toLowerCase()}`,
     stats.avgDuration !== null ? `avg ${formatDuration(stats.avgDuration)} long` : null,
-    stats.avgFrequency !== null ? `every ${formatDuration(stats.avgFrequency)}` : null,
   ].filter((p): p is string => p !== null)
 
   return (
