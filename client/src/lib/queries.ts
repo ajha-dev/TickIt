@@ -107,6 +107,7 @@ export function useCreateTracker(
     colour?: string
     fields?: FieldDefInput[]
     counter?: boolean
+    gaps?: boolean
   }
 > {
   const qc = useQueryClient()
@@ -131,6 +132,7 @@ export function useUpdateTracker(
       archivedAt?: number | null
       fields?: FieldDefInput[]
       counter?: boolean
+      gaps?: boolean
     }
   }
 > {

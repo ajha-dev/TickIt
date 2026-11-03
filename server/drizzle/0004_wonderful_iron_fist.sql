@@ -1,0 +1,1 @@
+ALTER TABLE `trackers` ADD `gaps` integer DEFAULT false NOT NULL;

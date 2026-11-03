@@ -79,6 +79,7 @@ interface Tracker {
   sortOrder: number
   fields: FieldDef[]          // JSON column; [] in Phase 1
   counter: boolean            // INTERVAL only — see Counted spans
+  gaps: boolean               // INTERVAL only — see Gaps between spans
   archivedAt: number | null
   createdAt: number; updatedAt: number
 }
@@ -117,11 +118,13 @@ All responses are JSON. Errors: `{ error: string }` with 400 / 404 / 409.
 
 ### Trackers
 - `GET /api/trackers?profileId=…` → `Tracker[]` (sorted by `sortOrder`, then `createdAt`)
-- `POST /api/trackers` `{ profileId, name, type, colour?, icon?, fields?, counter? }` → `Tracker`
-- `PATCH /api/trackers/:id` `{ name?, colour?, icon?, sortOrder?, archivedAt?, fields?, counter? }` → `Tracker`
+- `POST /api/trackers` `{ profileId, name, type, colour?, icon?, fields?, counter?, gaps? }` → `Tracker`
+- `PATCH /api/trackers/:id` `{ name?, colour?, icon?, sortOrder?, archivedAt?, fields?, counter?, gaps? }` → `Tracker`
   `counter` defaults to `false`. **400 `COUNTER_NOT_ALLOWED`** for `counter: true`
   on an `INSTANT` tracker — a Moment has no duration to count within. Unlike
   `type`, `counter` **is** changeable after creation; see Counted spans.
+  `gaps` follows the same rules: defaults to `false`, changeable, and
+  **400 `GAPS_NOT_ALLOWED`** for `gaps: true` on an `INSTANT`.
 - `DELETE /api/trackers/:id` → `204`
 - `GET /api/trackers/:id/delete-preview` → `{ events: number }`
 
@@ -246,6 +249,23 @@ on an event whose `ticks` is null: a counter cannot be retro-fitted, because
 there are no real tap times to invent. `endAt` remains independently editable
 once the span is stopped — the end is derived at stop, then behaves as an
 ordinary timestamp.
+
+## Gaps between spans
+
+A Span tracker may show the time between its spans (`Tracker.gaps`) — built for
+timing contractions. Nothing about events changes: gaps are **derived on the
+client** from consecutive events of the same tracker and never stored, so
+correcting a start or end corrects every gap it touches.
+
+For consecutive spans `prev`, `cur` of one tracker, ordered by `startAt`:
+
+- **frequency** `= cur.startAt - prev.startAt` — start to start, the figure a
+  midwife asks for ("every 5 minutes").
+- **rest** `= cur.startAt - prev.endAt`, clamped to ≥ 0 — the break between them.
+  A running `prev` has no end yet, so its rest is 0.
+
+A frequency over **2 hours** is a break between sessions, not a gap, and is not
+shown. The first span of a tracker has no gap.
 
 ## Field definitions and values
 

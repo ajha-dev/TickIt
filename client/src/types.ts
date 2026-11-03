@@ -49,6 +49,12 @@ export interface Tracker {
    * contributes nothing.
    */
   counter: boolean
+  /**
+   * Show the time between this tracker's spans — how often they come and the
+   * rest between them. Built for timing contractions. INTERVAL only; derived on
+   * the client from the events (lib/gaps.ts), never stored.
+   */
+  gaps: boolean
   archivedAt: number | null
   createdAt: number
   updatedAt: number

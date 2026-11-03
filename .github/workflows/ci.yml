@@ -60,6 +60,11 @@ jobs:
       - name: Reminder rules
         run: npm run test:reminders --workspace=server
 
+      # Time between contractions, derived on the client. A wrong gap is a
+      # wrong "every 5 minutes" read out on the phone.
+      - name: Contraction gaps
+        run: npm test --workspace=client
+
       - name: Build
         run: npm run build
 

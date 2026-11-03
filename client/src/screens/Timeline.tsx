@@ -7,6 +7,7 @@ import { EventSheet, type EventPatch } from '../components/EventSheet.tsx'
 import { addDays, endOfDay, formatDayHeading, startOfDay } from '../lib/days.ts'
 import { hapticUndo } from '../lib/haptics.ts'
 import { useDeleteEvent, useEventRange, useRunning, useTrackers, useUpdateEvent } from '../lib/queries.ts'
+import { gapsByEvent } from '../lib/gaps.ts'
 import { formatDay } from '../lib/time.ts'
 import type { Event, Profile, Tracker } from '../types.ts'
 
@@ -93,14 +94,17 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
    * day to reach it. A carried-over span from the previous night therefore
    * sorts to the bottom, which is where it happened.
    */
-  const events = useMemo(() => {
+  const merged = useMemo(() => {
     const byId = new Map<string, Event>()
     for (const e of eventsQuery.data ?? []) byId.set(e.id, e)
     for (const e of runningQuery.data ?? []) byId.set(e.id, e)
+    return [...byId.values()]
+  }, [eventsQuery.data, runningQuery.data])
 
+  const events = useMemo(() => {
     const now = Date.now()
     const out: Event[] = []
-    for (const e of byId.values()) {
+    for (const e of merged) {
       if (e.startAt >= dayEnd) continue
       if (e.startAt >= dayStart) {
         out.push(e)
@@ -114,7 +118,14 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
       if (finishedAt > dayStart) out.push(e)
     }
     return out.sort((a, b) => b.startAt - a.startAt)
-  }, [eventsQuery.data, runningQuery.data, dayStart, dayEnd])
+  }, [merged, dayStart, dayEnd])
+
+  /**
+   * Time between contractions, for trackers with `gaps` on. Taken from the
+   * whole query rather than the day: its 48h lookback is what lets the first
+   * contraction after midnight measure from the last one before it.
+   */
+  const gaps = useMemo(() => gapsByEvent(merged, trackerById), [merged, trackerById])
 
   /**
    * Archiving a tracker is a statement that it is done with, and the Log grid
@@ -240,6 +251,7 @@ export function TimelineScreen({ profile }: { profile: Profile }) {
                     key={event.id}
                     event={event}
                     tracker={trackerById.get(event.trackerId)}
+                    gap={gaps.get(event.id)}
                     onOpen={() => openEvent(event)}
                     above={
                       event.startAt < dayStart

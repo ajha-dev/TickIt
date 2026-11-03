@@ -150,6 +150,8 @@ export const createTrackerSchema = z.object({
   // the route with COUNTER_NOT_ALLOWED — the schema cannot see `type` on PATCH,
   // where it comes from the stored row, so the check lives in one place for both.
   counter: z.boolean().optional(),
+  // Same rule as `counter`: INTERVAL only, GAPS_NOT_ALLOWED otherwise.
+  gaps: z.boolean().optional(),
 })
 
 export const patchTrackerSchema = z.object({
@@ -162,6 +164,7 @@ export const patchTrackerSchema = z.object({
   // Unlike `type`, this IS changeable after creation — it is configuration, not
   // identity. Existing events keep whatever ticks they already have.
   counter: z.boolean().optional(),
+  gaps: z.boolean().optional(),
 })
 
 /* -------------------------------------------------------------------- events */

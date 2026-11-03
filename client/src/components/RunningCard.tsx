@@ -3,7 +3,8 @@ import { safeColour, tintedBorder, tintedSurface } from '../lib/colours.ts'
 // Stop's own haptic fires in Home, where stopping is orchestrated — the two
 // controls below are the only ones this card owns.
 import { hapticLog, hapticUndo } from '../lib/haptics.ts'
-import { formatClock, formatStopwatch, useElapsed } from '../lib/time.ts'
+import type { Gap } from '../lib/gaps.ts'
+import { formatClock, formatDuration, formatStopwatch, useElapsed } from '../lib/time.ts'
 import type { Event, Tracker } from '../types.ts'
 
 /**
@@ -27,9 +28,12 @@ export function RunningCard({
   onStop,
   onCount,
   pending,
+  gap,
 }: {
   event: Event
   tracker: Tracker | undefined
+  /** Time since the previous span began, on a `gaps` tracker — contractions. */
+  gap?: Gap
   onStop: () => void
   /**
    * The whole tick array this card wants the event to have — absolute, never a
@@ -92,6 +96,11 @@ export function RunningCard({
                 even final until the last tap decides it. */}
             {counted ? (
               <span className="stencil digits tracking-[-0.02em]">{formatStopwatch(elapsed)}</span>
+            ) : null}
+            {gap ? (
+              <span className="stencil digits tracking-[-0.02em]">
+                every {formatDuration(gap.frequency)}
+              </span>
             ) : null}
             {pending ? <span className="stencil text-lavender">· on this phone</span> : null}
           </div>

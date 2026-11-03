@@ -152,6 +152,8 @@ export function createTracker(input: {
   fields?: FieldDefInput[]
   /** INTERVAL only — 400 COUNTER_NOT_ALLOWED on an INSTANT tracker. */
   counter?: boolean
+  /** INTERVAL only — 400 GAPS_NOT_ALLOWED on an INSTANT tracker. */
+  gaps?: boolean
 }): Promise<Tracker> {
   return request('/trackers', { method: 'POST', body: input })
 }
@@ -171,6 +173,7 @@ export function updateTracker(
     /** Configuration, not identity — unlike `type` this may change after
      *  creation. Turning it off leaves existing counts intact. */
     counter?: boolean
+    gaps?: boolean
   },
 ): Promise<Tracker> {
   return request(`/trackers/${id}`, { method: 'PATCH', body: patch })

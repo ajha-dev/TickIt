@@ -144,6 +144,8 @@ function describe(failure: OutboxFailure): string {
       return `${what} — the server could not read the counts.`
     case 'COUNTER_NOT_ALLOWED':
       return `${what} — only a Span can count taps.`
+    case 'GAPS_NOT_ALLOWED':
+      return `${what} — only a Span has gaps between its entries.`
     case 'TRACKER_NOT_FOUND':
       return `${what} — its tracker was deleted.`
     case 'ALREADY_RUNNING':

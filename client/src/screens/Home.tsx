@@ -3,12 +3,14 @@ import { Link } from 'wouter'
 
 import { isAlreadyRunning } from '../api.ts'
 import { CaptureSheet } from '../components/CaptureSheet.tsx'
+import { ContractionSummary } from '../components/ContractionSummary.tsx'
 import { RunningCard } from '../components/RunningCard.tsx'
 import { Sheet, SheetButton } from '../components/Sheet.tsx'
 import { TrackerSheets, type TrackerSheetState } from '../components/TrackerSheets.tsx'
 import { TrackerTile } from '../components/TrackerTile.tsx'
 import { UndoToast, type ToastState } from '../components/UndoToast.tsx'
 import { safeColour } from '../lib/colours.ts'
+import { gapsByEvent } from '../lib/gaps.ts'
 import { useGridReorder } from '../lib/gridReorder.ts'
 import { hapticLog, hapticStop, hapticUndo } from '../lib/haptics.ts'
 import { isPending, useOutbox } from '../lib/outbox.ts'
@@ -16,15 +18,21 @@ import {
   useCaptureValues,
   useCountSpan,
   useDeleteEvent,
+  useEventRange,
   useLogMoment,
   useRunning,
   useStartSpan,
   useStopSpan,
   useTrackers,
 } from '../lib/queries.ts'
-import { formatClock } from '../lib/time.ts'
+import { formatClock, useNow } from '../lib/time.ts'
 import { useReorderTrackers } from '../lib/trackerOrder.ts'
 import type { Event, Profile, Tracker } from '../types.ts'
+
+const HOUR_MS = 60 * 60 * 1000
+
+/** A few hours of a personal log; the contract's own ceiling, as a guard. */
+const RECENT_LIMIT = 1000
 
 interface Conflict {
   tracker: Tracker
@@ -134,6 +142,42 @@ export function Home({
   const checkingRunning = runningQuery.isPending && running.length === 0
 
   const runningTrackerIds = useMemo(() => new Set(running.map((e) => e.trackerId)), [running])
+
+  /**
+   * Recent history, fetched only when some tracker shows gaps — contractions
+   * need the last few to say "since last" and "every …"; nothing else on this
+   * screen looks backwards.
+   *
+   * The window is pinned to the hour so its query key changes once an hour,
+   * not every render: it always reaches at least 3h back (past GAP_BREAK_MS,
+   * and the summary's hour), and its end runs ahead of now so a span started
+   * or stopped from here lands in this cache straight away.
+   */
+  const gapTrackers = useMemo(() => trackers.filter((t) => t.type === 'INTERVAL' && t.gaps), [trackers])
+  const hour = Math.floor(useNow(60_000) / HOUR_MS) * HOUR_MS
+  const recentQuery = useEventRange(
+    gapTrackers.length > 0 ? profileId : undefined,
+    hour - 3 * HOUR_MS,
+    hour + 2 * HOUR_MS,
+    RECENT_LIMIT,
+  )
+  const recent = useMemo(() => {
+    if (gapTrackers.length === 0) return []
+    const byId = new Map<string, Event>()
+    for (const e of recentQuery.data ?? []) byId.set(e.id, e)
+    for (const e of running) byId.set(e.id, e)
+    return [...byId.values()]
+  }, [gapTrackers.length, recentQuery.data, running])
+  const recentGaps = useMemo(() => gapsByEvent(recent, trackerById), [recent, trackerById])
+  const lastStartByTracker = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const e of recent) {
+      if (e.type !== 'INTERVAL') continue
+      const seen = map.get(e.trackerId)
+      if (seen === undefined || e.startAt > seen) map.set(e.trackerId, e.startAt)
+    }
+    return map
+  }, [recent])
 
   /**
    * Reorder writes the same `sortOrder` the server sorts on, so the grid you
@@ -400,6 +444,7 @@ export function Home({
                 event={event}
                 tracker={trackerById.get(event.trackerId)}
                 pending={isPending(event.id)}
+                gap={recentGaps.get(event.id)}
                 onCount={(ticks) => onCount(event, ticks)}
                 onStop={() => onStop(event.id)}
               />
@@ -418,6 +463,10 @@ export function Home({
             <p className="stencil">checking for a running span</p>
           </section>
         ) : null}
+
+        {gapTrackers.map((tracker) => (
+          <ContractionSummary key={tracker.id} tracker={tracker} events={recent} />
+        ))}
 
         {trackersQuery.isPending ? (
           <div className="grid grid-cols-2 gap-3" aria-hidden>
@@ -497,6 +546,7 @@ export function Home({
                     <TrackerTile
                       tracker={tracker}
                       running={runningTrackerIds.has(tracker.id)}
+                      lastStartAt={tracker.gaps ? lastStartByTracker.get(tracker.id) : undefined}
                       onTap={() => onTapTracker(tracker)}
                       label={editing ? `Edit ${tracker.name}` : undefined}
                     />

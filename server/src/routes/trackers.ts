@@ -69,6 +69,11 @@ trackerRoutes.post('/trackers', async (c) => {
   if (parsed.data.counter === true && parsed.data.type === 'INSTANT') {
     return c.json({ error: 'COUNTER_NOT_ALLOWED' }, 400)
   }
+  // The time between Moments is not a gap between spans: a Moment has no end
+  // to rest from. Refused for the same reason as the counter.
+  if (parsed.data.gaps === true && parsed.data.type === 'INSTANT') {
+    return c.json({ error: 'GAPS_NOT_ALLOWED' }, 400)
+  }
 
   const now = Date.now()
   const row = {
@@ -81,6 +86,7 @@ trackerRoutes.post('/trackers', async (c) => {
     sortOrder: 0,
     fields: resolveFields(parsed.data.fields ?? [], []),
     counter: parsed.data.counter ?? false,
+    gaps: parsed.data.gaps ?? false,
     archivedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -102,6 +108,9 @@ trackerRoutes.patch('/trackers/:id', async (c) => {
   if (p.counter === true && existing.type === 'INSTANT') {
     return c.json({ error: 'COUNTER_NOT_ALLOWED' }, 400)
   }
+  if (p.gaps === true && existing.type === 'INSTANT') {
+    return c.json({ error: 'GAPS_NOT_ALLOWED' }, 400)
+  }
 
   const patch: Partial<typeof existing> = { updatedAt: Date.now() }
   if ('name' in p) patch.name = p.name
@@ -114,6 +123,7 @@ trackerRoutes.patch('/trackers/:id', async (c) => {
   // identity. Events already logged keep their ticks either way; the app does
   // not rewrite history to match a definition change.
   if (p.counter !== undefined) patch.counter = p.counter
+  if (p.gaps !== undefined) patch.gaps = p.gaps
 
   db.update(trackers).set(patch).where(eq(trackers.id, id)).run()
   const row = db.select().from(trackers).where(eq(trackers.id, id)).get()

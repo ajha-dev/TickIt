@@ -52,6 +52,16 @@ export const trackers = sqliteTable(
      * instead, so toggling this mid-session cannot break a running span.
      */
     counter: integer('counter', { mode: 'boolean' }).notNull().default(false),
+    /**
+     * Does the timeline show the time between this tracker's spans — how often
+     * they come and how long the rest between them is? Built for timing
+     * contractions. Meaningful only when `type = 'INTERVAL'`, and rejected on an
+     * INSTANT exactly as `counter` is.
+     *
+     * Purely presentational: gaps are derived from the events on the client and
+     * never stored, so an edited start or end corrects them by itself.
+     */
+    gaps: integer('gaps', { mode: 'boolean' }).notNull().default(false),
     archivedAt: integer('archived_at'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),

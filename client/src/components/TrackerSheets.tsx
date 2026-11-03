@@ -39,6 +39,8 @@ interface Draft {
   fields: FieldDraft[]
   /** Span only. Configuration, not identity — editable after creation. */
   counter: boolean
+  /** Span only. Show the time between spans — contractions. */
+  gaps: boolean
 }
 
 export function TrackerSheets({
@@ -64,6 +66,7 @@ export function TrackerSheets({
     colour: nextColour([]),
     fields: [],
     counter: false,
+    gaps: false,
   })
 
   const close = () => onState(null)
@@ -99,6 +102,7 @@ export function TrackerSheets({
         // toDrafts keeps every existing field id — see lib/fields.ts.
         fields: toDrafts(editing.fields),
         counter: editing.counter,
+        gaps: editing.gaps,
       })
     } else {
       setDraft({
@@ -108,6 +112,7 @@ export function TrackerSheets({
         colour: nextColour(trackers.map((t) => t.colour)),
         fields: [],
         counter: false,
+        gaps: false,
       })
     }
   }, [formOpen, editing, trackers])
@@ -134,15 +139,16 @@ export function TrackerSheets({
     // which may hold a stale true from a type switch made before creating.
     const type = editing ? editing.type : draft.type
     const counter = type === 'INTERVAL' && draft.counter
+    const gaps = type === 'INTERVAL' && draft.gaps
 
     if (editing) {
       updateTracker.mutate({
         id: editing.id,
-        patch: { name, colour: draft.colour, fields, counter },
+        patch: { name, colour: draft.colour, fields, counter, gaps },
       })
     } else {
       hapticLog()
-      createTracker.mutate({ name, type: draft.type, colour: draft.colour, fields, counter })
+      createTracker.mutate({ name, type: draft.type, colour: draft.colour, fields, counter, gaps })
     }
     close()
   }
@@ -201,6 +207,12 @@ export function TrackerSheets({
               checked={draft.counter}
               onChange={(counter) => setDraft((d) => ({ ...d, counter }))}
               label="Count taps — the span runs from the first count to the last."
+            />
+            <p className="stencil mt-4 mb-2">gaps</p>
+            <Toggle
+              checked={draft.gaps}
+              onChange={(gaps) => setDraft((d) => ({ ...d, gaps }))}
+              label="Show the time between spans — for timing contractions."
             />
           </div>
         ) : null}

@@ -1,4 +1,6 @@
 import { safeColour, tintedBorder, tintedSurface } from '../lib/colours.ts'
+import { GAP_BREAK_MS } from '../lib/gaps.ts'
+import { formatDuration, useElapsed } from '../lib/time.ts'
 import type { Tracker } from '../types.ts'
 
 /**
@@ -18,10 +20,17 @@ export function TrackerTile({
   running,
   onTap,
   label,
+  lastStartAt,
 }: {
   tracker: Tracker
   running: boolean
   onTap: () => void
+  /**
+   * When the newest span of a `gaps` tracker began — the "since last" clock.
+   * Start, not end, so it counts the same way the timeline's "every …" does
+   * and the next one reads as due when it nears the usual frequency.
+   */
+  lastStartAt?: number | null
   /**
    * Overrides the spoken label. The same tile is a log button in normal mode
    * and a settings button in edit mode, so the default "Log Water" would tell a
@@ -74,7 +83,24 @@ export function TrackerTile({
             asks {tracker.fields[0].label.toLowerCase()}
           </p>
         ) : null}
+        {/* Not while running: the running card already has the live clock. */}
+        {lastStartAt != null && !running ? <SinceLast startAt={lastStartAt} /> : null}
       </div>
     </button>
+  )
+}
+
+/** Only a tile with something to count from subscribes to the clock. */
+function SinceLast({ startAt }: { startAt: number }) {
+  const elapsed = useElapsed(startAt)
+  // Past the break it is a new session, not a long wait — say nothing.
+  if (elapsed > GAP_BREAK_MS) return null
+  return (
+    <p
+      className="digits mt-1.5 truncate text-[11px] leading-none text-text-dim"
+      aria-label={`${formatDuration(elapsed)} since the last one started`}
+    >
+      <span aria-hidden>since last {formatDuration(elapsed)}</span>
+    </p>
   )
 }
